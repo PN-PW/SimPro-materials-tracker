@@ -1,0 +1,17 @@
+# Local secrets — never commit
+.env
+.env.local
+.env.*.local
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Node / build artefacts (for future tooling)
+node_modules/
+dist/
+build/
+*.log

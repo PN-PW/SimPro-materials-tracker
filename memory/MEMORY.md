@@ -1,0 +1,2 @@
+- [Project overview](project_overview.md) — SimPro Materials Tracker: Tampermonkey + Supabase, multi-user, audit, DOM-only v1
+- [User role](user_role.md) — Pawel @ PowerNaturally, SimPro admin + API creds, wants enterprise-grade from day one
