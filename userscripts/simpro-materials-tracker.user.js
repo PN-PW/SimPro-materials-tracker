@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimPro Materials Tracker
 // @namespace    https://powernaturally.simprosuite.com/
-// @version      1.8.0
+// @version      1.8.1
 // @description  Track delivery route, tracking number, ETA and status per material allocation on SimPro cost-centre pages. Multi-user with realtime sync, audit log, filter chips, CSV export, bulk ETA, CC-log CSV, and BI progress overlay — backed by Supabase.
 // @author       PowerNaturally
 // @match        https://powernaturally.simprosuite.com/staff/editCostCentre.php*
@@ -1446,6 +1446,18 @@
       if (!entries.length) {
         list.innerHTML = `<div class="mt-audit-empty">No history yet.</div>`;
         return;
+      }
+      // Warm email cache for any UIDs not yet known.
+      const unknownUids = [...new Set(
+        entries.map(e => e.changed_by)
+          .filter(u => u && u !== currentUser?.id && !userEmailCache.has(u))
+      )];
+      if (unknownUids.length) {
+        try {
+          const { data: ps } = await sb
+            .from('user_profiles').select('user_id, email').in('user_id', unknownUids);
+          if (ps) ps.forEach(p => { if (p.email) userEmailCache.set(p.user_id, p.email); });
+        } catch {}
       }
       list.innerHTML = entries.map(e => {
         const when = fmtDateTime(e.changed_at);
