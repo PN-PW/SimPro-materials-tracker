@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimPro Materials Tracker
 // @namespace    https://powernaturally.simprosuite.com/
-// @version      1.8.5
+// @version      1.8.6
 // @description  Track delivery route, tracking number, ETA and status per material allocation on SimPro cost-centre pages. Multi-user with realtime sync, audit log, filter chips, CSV export, bulk ETA, CC-log CSV, and BI progress overlay — backed by Supabase.
 // @author       PowerNaturally
 // @match        https://powernaturally.simprosuite.com/staff/editCostCentre.php*
@@ -21,6 +21,19 @@
 
 /* global supabase, GM_addStyle, GM_getValue, GM_setValue, GM_deleteValue, GM_xmlhttpRequest */
 
+// ─── v1.8.6 changelog ─────────────────────────────────────────────────────
+//   BUG FIX — v1.8.5 broke Allocated tab (status tier colours lost, wrong
+//   stripe colours) while not improving other tabs:
+//   The CSS rule was scoped to .mt-allocated-active but still targeted all
+//   `> td`, giving it higher specificity than the status-tier CSS rules — so
+//   stripe colour stomped the tier colour on the status column. The re-apply
+//   loop also touched MT-injected TDs (.mt-cell, .mt-check) which have their
+//   own colour rules and should never receive an inline stripe override.
+//   Fix: both the CSS selector and the JS re-apply / clear loops now exclude
+//   .mt-cell and .mt-check elements. Native SimPro TDs get the inline stripe
+//   on the Allocated tab (and lose it on other tabs); MT-injected cells keep
+//   their CSS-based colours untouched on all tabs.
+//
 // ─── v1.8.5 changelog ─────────────────────────────────────────────────────
 //   BUG FIX — inconsistent row striping on Required / All / In Stock / Order:
 //   Our script applies inline background-color !important to every TD during
@@ -300,12 +313,13 @@
       padding: 4px 6px;
       vertical-align: middle;
     }
-    /* Row striping — only on the Allocated tab. syncAllocatedView clears our
-       inline background overrides when switching to other tabs so SimPro's own
-       striping can take over. !important beats SimPro's occasional inline
-       !important declarations via the CSS cascade on the Allocated tab. */
-    #materialsTable.mt-allocated-active tbody tr.mt-row-even > td { background: #ffffff !important; }
-    #materialsTable.mt-allocated-active tbody tr.mt-row-odd  > td { background: #eef2f7 !important; }
+    /* Row striping — only on the Allocated tab, and only on native SimPro TDs
+       (not our injected .mt-cell / .mt-check cells — those have their own
+       status-tier and transparent backgrounds that must not be overridden).
+       syncAllocatedView clears inline overrides when leaving Allocated so
+       SimPro's own striping takes over on other tabs. */
+    #materialsTable.mt-allocated-active tbody tr.mt-row-even > td:not(.mt-cell):not(.mt-check) { background: #ffffff !important; }
+    #materialsTable.mt-allocated-active tbody tr.mt-row-odd  > td:not(.mt-cell):not(.mt-check) { background: #eef2f7 !important; }
     /* Fixed widths so dropdowns never overlap.
        v1.6.4: reduced from 608px → 479px; v1.6.4b: 479px → 412px.
        The header labels also drive minimum column width (white-space:nowrap),
@@ -2332,19 +2346,23 @@ Bar % = average weight across all lines.">
       table.classList.toggle('mt-allocated-active', isAllocated);
       if (bar) bar.style.display = isAllocated ? '' : 'none';
       if (!isAllocated) {
-        // Clear our inline background-color overrides so SimPro's native
-        // row striping is visible on Required / All / In Stock / Order tabs.
-        for (const td of table.querySelectorAll('tbody tr[data-mt-injected="1"] > td')) {
+        // Clear inline background-color from native SimPro TDs so SimPro's
+        // own row striping takes over on Required / All / In Stock / Order.
+        // MT-injected cells (.mt-cell, .mt-check) never had inline stripe
+        // color set so there is nothing to clear there.
+        for (const td of table.querySelectorAll(
+          'tbody tr[data-mt-injected="1"] > td:not(.mt-cell):not(.mt-check)'
+        )) {
           td.style.removeProperty('background-color');
         }
       } else {
-        // Returning to Allocated — re-apply stripe colours inline so they
-        // beat any SimPro inline !important rules that survived the tab switch.
+        // Returning to Allocated — re-apply inline stripe on native SimPro TDs
+        // only. MT-injected cells keep their CSS-based colours (status tier etc.).
         let si = 1;
         for (const tr of table.querySelectorAll('tbody tr[data-mt-injected="1"]')) {
           const isOdd = si % 2 === 1;
           for (const td of tr.children) {
-            if (td.tagName === 'TD')
+            if (td.tagName === 'TD' && !td.classList.contains('mt-cell') && !td.classList.contains('mt-check'))
               td.style.setProperty('background-color', isOdd ? STRIPE_ODD : STRIPE_EVEN, 'important');
           }
           si++;
