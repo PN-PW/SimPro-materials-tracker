@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimPro Materials Tracker
 // @namespace    https://powernaturally.simprosuite.com/
-// @version      1.8.8
+// @version      1.8.9
 // @description  Track delivery route, tracking number, ETA and status per material allocation on SimPro cost-centre pages. Multi-user with realtime sync, audit log, filter chips, CSV export, bulk ETA, CC-log CSV, and BI progress overlay — backed by Supabase.
 // @author       PowerNaturally
 // @match        https://powernaturally.simprosuite.com/staff/editCostCentre.php*
@@ -21,6 +21,29 @@
 
 /* global supabase, GM_addStyle, GM_getValue, GM_setValue, GM_deleteValue, GM_xmlhttpRequest */
 
+// ─── v1.8.9 changelog ─────────────────────────────────────────────────────
+//   BUG FIX — multi-user: one user sees MT cells locked (grayed-out), the
+//   other sees them working correctly on the same job at the same time.
+//
+//   Root cause: parseAllocationRows reads stockInput.value SYNCHRONOUSLY at
+//   script start (document-idle).  SimPro sometimes sets stock input values
+//   via its own JavaScript AFTER document-idle fires, creating a race.  If
+//   our script wins the race it reads 0, marks every row mt-unassigned, and
+//   injects grayed-out, non-interactive MT cells.  The other user's browser
+//   loses the race (SimPro's JS ran first) and gets the real values.
+//
+//   Fix 1 — Post-injection re-check: after all rows are injected, re-read
+//   each stockInput.value at 300 ms and 1500 ms.  If a value has changed
+//   from 0 → non-zero (SimPro populated it after our initial parse), the
+//   mt-unassigned class is lifted and the MT controls are re-enabled.
+//
+//   Fix 2 — ensureRecords guard: the same timing artefact caused ensureRecords
+//   to write assigned_qty=null back to Supabase when stored.assigned_qty was
+//   a real non-zero value, silently corrupting the BI progress denominator.
+//   ensureRecords now only propagates an assigned_qty change when the DOM
+//   value is non-null; a null/zero DOM value never overwrites a real stored
+//   value.
+//
 // ─── v1.8.7 changelog ─────────────────────────────────────────────────────
 //   BUG FIX — v1.8.6 chess-board on Allocated tab + no improvement elsewhere:
 //   Two separate bugs:
@@ -1024,7 +1047,15 @@
         // touching the tracking record — if we leave them stale the BI progress
         // calculation uses the wrong denominator and diverges from the CC page.
         const stored = existingMap.get(key);
-        const aqChanged = stored.assigned_qty !== r.assigned_qty;
+        // Guard: only propagate an assigned_qty decrease-to-null if the DOM
+        // value is genuinely non-null.  A null/zero value from parseAllocationRows
+        // may be a timing artefact — SimPro sometimes initialises stock inputs
+        // asynchronously AFTER document-idle fires, so we can briefly see 0 even
+        // when stock IS assigned.  Writing that 0 back to Supabase would corrupt
+        // the BI progress denominator for every user.  We still allow legitimate
+        // updates (non-null → different non-null, or null → non-null).
+        const aqChanged = stored.assigned_qty !== r.assigned_qty &&
+                          (r.assigned_qty != null || stored.assigned_qty == null);
         const rqChanged = stored.required_qty  !== r.required_qty;
         if (aqChanged || rqChanged) {
           toUpdate.push({ id: stored.id, assigned_qty: r.assigned_qty, required_qty: r.required_qty });
@@ -2342,6 +2373,39 @@ Bar % = average weight across all lines.">
       rowsById.set(rec.id, r);
     }
     log('striped', stripeIdx, 'allocation rows');
+
+    // ── Post-injection assigned-state re-check ────────────────────────────────
+    // SimPro sometimes initialises stock-input values asynchronously (its own JS
+    // fires around document-idle, creating a race with our parseAllocationRows).
+    // If we parsed before SimPro set the values, every row read assigned_qty=null
+    // and was marked mt-unassigned — MT cells grayed-out for one user while fine
+    // for another on the same page.  Re-read each input after a short delay; if
+    // the value has since changed, lift or apply mt-unassigned accordingly.
+    // Two passes (300 ms + 1500 ms) cover fast inline-JS and slower AJAX init.
+    function recheckAssignedState() {
+      let changed = 0;
+      for (const r of rows) {
+        const inp = r.row.querySelector('input[name^="stock["]');
+        if (!inp) continue;
+        const freshQty = parseFloat(inp.value || '') || null;
+        const shouldBeUnassigned = !freshQty;
+        const isUnassigned = r.row.classList.contains('mt-unassigned');
+        if (isUnassigned !== shouldBeUnassigned) {
+          r.row.classList.toggle('mt-unassigned', shouldBeUnassigned);
+          // Sync disabled state on interactive MT controls in this row.
+          const rdonly = currentUserRole === 'readonly';
+          r.row.querySelector('input.mt-row-check')?.toggleAttribute('disabled', rdonly || shouldBeUnassigned);
+          r.row.querySelectorAll('td.mt-cell select').forEach(s => {
+            s.disabled = rdonly || shouldBeUnassigned;
+          });
+          changed++;
+        }
+      }
+      if (changed) log('assigned-state re-check updated', changed, 'row(s)');
+    }
+    setTimeout(recheckAssignedState, 300);
+    setTimeout(recheckAssignedState, 1500);
+
     bar = injectBulkBar({
       records: allRecords(),
       recordsRef,
