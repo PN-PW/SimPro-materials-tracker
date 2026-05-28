@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimPro Materials Tracker
 // @namespace    https://powernaturally.simprosuite.com/
-// @version      1.8.3
+// @version      1.8.4
 // @description  Track delivery route, tracking number, ETA and status per material allocation on SimPro cost-centre pages. Multi-user with realtime sync, audit log, filter chips, CSV export, bulk ETA, CC-log CSV, and BI progress overlay — backed by Supabase.
 // @author       PowerNaturally
 // @match        https://powernaturally.simprosuite.com/staff/editCostCentre.php*
@@ -21,6 +21,26 @@
 
 /* global supabase, GM_addStyle, GM_getValue, GM_setValue, GM_deleteValue, GM_xmlhttpRequest */
 
+// ─── v1.8.4 changelog ─────────────────────────────────────────────────────
+//   BUG FIX — Required/All/In Stock/Order tabs showed rows that SimPro
+//   had hidden (e.g. Needed = 0 on the Required tab):
+//   applyFilter() used `display:table-row !important` to fight SimPro's
+//   autosave `.hide` re-additions on the Allocated tab. That same override
+//   also fired on non-Allocated tabs, stomping SimPro's legitimate row-hiding.
+//   Fix: applyFilter now checks `mt-allocated-active` on the table and only
+//   forces display on the Allocated tab; on other tabs it removes the override
+//   so SimPro's native tab filtering works normally.
+//   syncAllocatedView now calls filterApi.reapply() immediately on tab switch
+//   so the cleanup happens synchronously rather than waiting for the next
+//   MutationObserver event.
+//
+// ─── v1.8.3 changelog ─────────────────────────────────────────────────────
+//   • Added @updateURL and @downloadURL headers pointing to the public GitHub
+//     raw URL so Tampermonkey auto-updates when the repo is public.
+//   • Fixed checkbox header (`th.mt-check`) not being hidden on non-Allocated
+//     stock sub-tabs (Required, All, In Stock, Order). The CSS guard rule now
+//     includes `th.mt-check` alongside `th.mt-col-head`.
+//
 // ─── v1.8.0 changelog ─────────────────────────────────────────────────────
 //   • Route: SU_WH_ST (Supplier → Warehouse → Site) renamed to SU_WH
 //     (Supplier → Warehouse). The site-delivery leg is now tracked separately
@@ -1876,10 +1896,15 @@ Bar % = average weight across all lines.">
         // momentarily out of sync with the DOM.
         const match = !wanted || !rec || wanted.has(rec.status);
         if (match) {
-          // Use !important so SimPro's `.hide { display:none }` stylesheet rule
-          // can never override us. Rows we decide to show MUST be visible even
-          // when SimPro's autosave re-adds the `hide` class between re-renders.
-          tr.style.setProperty('display', 'table-row', 'important');
+          if (document.querySelector('#materialsTable')?.classList.contains('mt-allocated-active')) {
+            // On the Allocated tab: force visible with !important so SimPro's
+            // autosave `.hide { display:none }` re-additions can't hide our rows.
+            tr.style.setProperty('display', 'table-row', 'important');
+          } else {
+            // On other tabs (Required, All, In Stock, Order): remove our override
+            // so SimPro's native tab filtering (`.hide`) works normally.
+            tr.style.removeProperty('display');
+          }
           shown++;
         } else {
           // Use !important so SimPro's own row stylesheet rules can't beat us
@@ -2292,6 +2317,7 @@ Bar % = average weight across all lines.">
       const isAllocated = activeStockTab === 'Allocated';
       table.classList.toggle('mt-allocated-active', isAllocated);
       if (bar) bar.style.display = isAllocated ? '' : 'none';
+      filterApi.reapply?.();
     }
     const stockTabLinks = [...document.querySelectorAll('a.subTab')]
       .filter(a => STOCK_SUB_TABS.has(a.querySelector('span')?.textContent.trim()));
