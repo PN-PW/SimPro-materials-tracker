@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimPro Materials Tracker
 // @namespace    https://powernaturally.simprosuite.com/
-// @version      1.8.6
+// @version      1.8.7
 // @description  Track delivery route, tracking number, ETA and status per material allocation on SimPro cost-centre pages. Multi-user with realtime sync, audit log, filter chips, CSV export, bulk ETA, CC-log CSV, and BI progress overlay — backed by Supabase.
 // @author       PowerNaturally
 // @match        https://powernaturally.simprosuite.com/staff/editCostCentre.php*
@@ -21,6 +21,23 @@
 
 /* global supabase, GM_addStyle, GM_getValue, GM_setValue, GM_deleteValue, GM_xmlhttpRequest */
 
+// ─── v1.8.7 changelog ─────────────────────────────────────────────────────
+//   BUG FIX — v1.8.6 chess-board on Allocated tab + no improvement elsewhere:
+//   Two separate bugs:
+//   1. CSS specificity: the stripe rule had `tbody tr` in the selector, giving
+//      it extra element selectors and pushing its specificity above the tier-
+//      colour rules — status cell tier colours were lost on Allocated tab.
+//      Fix: remove `tbody tr` from selector → (0,1,2,1), same as tier rules.
+//      Equal !important specificity → last-declared wins → tier wins. ✓
+//   2. Re-apply counter: syncAllocatedView re-applied with si=1,2,3… but only
+//      iterated [data-mt-injected="1"] rows. Non-injected rows (no tracking
+//      record) still consumed stripe positions during the initial injection, so
+//      the counter produced wrong odd/even assignments for injected rows → chess
+//      board. Fix: read mt-row-odd/even CLASS set during injection — no counter.
+//   3. Clear scope: clear only targeted injected rows; non-injected rows kept
+//      their inline style and still showed wrong colours on non-Allocated tabs.
+//      Fix: clear uses tr:is(.mt-row-odd,.mt-row-even) to cover all striped rows.
+//
 // ─── v1.8.6 changelog ─────────────────────────────────────────────────────
 //   BUG FIX — v1.8.5 broke Allocated tab (status tier colours lost, wrong
 //   stripe colours) while not improving other tabs:
@@ -313,13 +330,16 @@
       padding: 4px 6px;
       vertical-align: middle;
     }
-    /* Row striping — only on the Allocated tab, and only on native SimPro TDs
-       (not our injected .mt-cell / .mt-check cells — those have their own
-       status-tier and transparent backgrounds that must not be overridden).
-       syncAllocatedView clears inline overrides when leaving Allocated so
-       SimPro's own striping takes over on other tabs. */
-    #materialsTable.mt-allocated-active tbody tr.mt-row-even > td:not(.mt-cell):not(.mt-check) { background: #ffffff !important; }
-    #materialsTable.mt-allocated-active tbody tr.mt-row-odd  > td:not(.mt-cell):not(.mt-check) { background: #eef2f7 !important; }
+    /* Row striping — Allocated tab only.
+       Specificity (0,1,2,1) is deliberately equal to the status-tier rules
+       declared ~100 lines below. Equal !important specificity → last-declared
+       wins, so tier colours always beat stripe on the status cell. Applies to
+       all direct-child td (including MT cells) so the whole row is uniform;
+       native TDs also receive inline !important via JS to beat SimPro's own
+       occasional inline overrides. syncAllocatedView removes those inline
+       overrides when leaving Allocated so SimPro's colours take over. */
+    #materialsTable.mt-allocated-active .mt-row-even > td { background: #ffffff !important; }
+    #materialsTable.mt-allocated-active .mt-row-odd  > td { background: #eef2f7 !important; }
     /* Fixed widths so dropdowns never overlap.
        v1.6.4: reduced from 608px → 479px; v1.6.4b: 479px → 412px.
        The header labels also drive minimum column width (white-space:nowrap),
@@ -2346,26 +2366,28 @@ Bar % = average weight across all lines.">
       table.classList.toggle('mt-allocated-active', isAllocated);
       if (bar) bar.style.display = isAllocated ? '' : 'none';
       if (!isAllocated) {
-        // Clear inline background-color from native SimPro TDs so SimPro's
-        // own row striping takes over on Required / All / In Stock / Order.
-        // MT-injected cells (.mt-cell, .mt-check) never had inline stripe
-        // color set so there is nothing to clear there.
+        // Remove inline background-color from ALL striped native TDs (both
+        // injected and non-injected rows) so SimPro's own row colours take
+        // over on Required / All / In Stock / Order. MT cells (.mt-cell,
+        // .mt-check) never receive inline stripe so excluding them is a no-op
+        // but makes intent clear.
         for (const td of table.querySelectorAll(
-          'tbody tr[data-mt-injected="1"] > td:not(.mt-cell):not(.mt-check)'
+          'tbody tr:is(.mt-row-odd,.mt-row-even) > td:not(.mt-cell):not(.mt-check)'
         )) {
           td.style.removeProperty('background-color');
         }
       } else {
-        // Returning to Allocated — re-apply inline stripe on native SimPro TDs
-        // only. MT-injected cells keep their CSS-based colours (status tier etc.).
-        let si = 1;
-        for (const tr of table.querySelectorAll('tbody tr[data-mt-injected="1"]')) {
-          const isOdd = si % 2 === 1;
+        // Back on Allocated — re-apply inline stripe on native TDs to beat
+        // any SimPro inline !important that survived the tab switch.
+        // Read odd/even from the class already on the row (set during the
+        // initial injection) rather than counting from scratch, so rows
+        // without a tracking record don't break the sequence.
+        for (const tr of table.querySelectorAll('tbody tr:is(.mt-row-odd,.mt-row-even)')) {
+          const isOdd = tr.classList.contains('mt-row-odd');
           for (const td of tr.children) {
             if (td.tagName === 'TD' && !td.classList.contains('mt-cell') && !td.classList.contains('mt-check'))
               td.style.setProperty('background-color', isOdd ? STRIPE_ODD : STRIPE_EVEN, 'important');
           }
-          si++;
         }
       }
       filterApi.reapply?.();
