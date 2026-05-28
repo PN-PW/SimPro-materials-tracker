@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimPro Materials Tracker
 // @namespace    https://powernaturally.simprosuite.com/
-// @version      1.8.4
+// @version      1.8.5
 // @description  Track delivery route, tracking number, ETA and status per material allocation on SimPro cost-centre pages. Multi-user with realtime sync, audit log, filter chips, CSV export, bulk ETA, CC-log CSV, and BI progress overlay — backed by Supabase.
 // @author       PowerNaturally
 // @match        https://powernaturally.simprosuite.com/staff/editCostCentre.php*
@@ -21,6 +21,21 @@
 
 /* global supabase, GM_addStyle, GM_getValue, GM_setValue, GM_deleteValue, GM_xmlhttpRequest */
 
+// ─── v1.8.5 changelog ─────────────────────────────────────────────────────
+//   BUG FIX — inconsistent row striping on Required / All / In Stock / Order:
+//   Our script applies inline background-color !important to every TD during
+//   injection, based on each row's DOM position across ALL rows. On the
+//   Allocated tab this is correct. On other tabs SimPro hides rows (Needed=0
+//   etc.) but hidden rows still consume stripe positions, so visible rows can
+//   end up all the same colour.
+//   Fix: syncAllocatedView now clears inline background-color from all MT TDs
+//   when switching to a non-Allocated tab, and re-applies them on return.
+//   The CSS striping rule is scoped to #materialsTable.mt-allocated-active so
+//   SimPro's own alternating colours take effect on all other tabs.
+//   reinjectAfterRefresh also calls syncAllocatedView() (was filterApi.reapply)
+//   so a SimPro partial re-render on a non-Allocated tab doesn't restore the
+//   stale inline colours.
+//
 // ─── v1.8.4 changelog ─────────────────────────────────────────────────────
 //   BUG FIX — Required/All/In Stock/Order tabs showed rows that SimPro
 //   had hidden (e.g. Needed = 0 on the Required tab):
@@ -285,13 +300,12 @@
       padding: 4px 6px;
       vertical-align: middle;
     }
-    /* Row striping — JS tags EVERY parsed row with mt-row-odd / mt-row-even (even
-       rows that have no matching tracking record), so the pattern never drifts.
-       !important because SimPro paints some cells with inline or !important rules
-       that would otherwise win on cells we didn't insert. Colours chosen with a
-       larger contrast than before so the alternation is obvious at a glance. */
-    #materialsTable tbody tr.mt-row-even > td { background: #ffffff !important; }
-    #materialsTable tbody tr.mt-row-odd  > td { background: #eef2f7 !important; }
+    /* Row striping — only on the Allocated tab. syncAllocatedView clears our
+       inline background overrides when switching to other tabs so SimPro's own
+       striping can take over. !important beats SimPro's occasional inline
+       !important declarations via the CSS cascade on the Allocated tab. */
+    #materialsTable.mt-allocated-active tbody tr.mt-row-even > td { background: #ffffff !important; }
+    #materialsTable.mt-allocated-active tbody tr.mt-row-odd  > td { background: #eef2f7 !important; }
     /* Fixed widths so dropdowns never overlap.
        v1.6.4: reduced from 608px → 479px; v1.6.4b: 479px → 412px.
        The header labels also drive minimum column width (white-space:nowrap),
@@ -2317,6 +2331,25 @@ Bar % = average weight across all lines.">
       const isAllocated = activeStockTab === 'Allocated';
       table.classList.toggle('mt-allocated-active', isAllocated);
       if (bar) bar.style.display = isAllocated ? '' : 'none';
+      if (!isAllocated) {
+        // Clear our inline background-color overrides so SimPro's native
+        // row striping is visible on Required / All / In Stock / Order tabs.
+        for (const td of table.querySelectorAll('tbody tr[data-mt-injected="1"] > td')) {
+          td.style.removeProperty('background-color');
+        }
+      } else {
+        // Returning to Allocated — re-apply stripe colours inline so they
+        // beat any SimPro inline !important rules that survived the tab switch.
+        let si = 1;
+        for (const tr of table.querySelectorAll('tbody tr[data-mt-injected="1"]')) {
+          const isOdd = si % 2 === 1;
+          for (const td of tr.children) {
+            if (td.tagName === 'TD')
+              td.style.setProperty('background-color', isOdd ? STRIPE_ODD : STRIPE_EVEN, 'important');
+          }
+          si++;
+        }
+      }
       filterApi.reapply?.();
     }
     const stockTabLinks = [...document.querySelectorAll('a.subTab')]
@@ -2396,10 +2429,10 @@ Bar % = average weight across all lines.">
           syncAllocatedView(); // re-apply tab visibility after bar re-inject
         }
       }
-      // Always re-apply the filter after ANY mutation — this re-asserts our
-      // `display:table-row !important` on shown rows, overriding any `hide`
-      // class SimPro may have added during a partial autosave re-render.
-      filterApi.reapply?.();
+      // Always sync tab state after any mutation — this re-asserts display
+      // overrides on the Allocated tab, clears inline stripe overrides on
+      // other tabs, and re-applies the active filter chip.
+      syncAllocatedView();
     }, 250);
     const tbody = table.querySelector('tbody');
     // Wrap the debounced callback so we can filter mutations before debouncing.
