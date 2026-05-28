@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimPro Materials Tracker
 // @namespace    https://powernaturally.simprosuite.com/
-// @version      1.8.7
+// @version      1.8.8
 // @description  Track delivery route, tracking number, ETA and status per material allocation on SimPro cost-centre pages. Multi-user with realtime sync, audit log, filter chips, CSV export, bulk ETA, CC-log CSV, and BI progress overlay — backed by Supabase.
 // @author       PowerNaturally
 // @match        https://powernaturally.simprosuite.com/staff/editCostCentre.php*
@@ -2376,6 +2376,23 @@ Bar % = average weight across all lines.">
         )) {
           td.style.removeProperty('background-color');
         }
+        // SimPro has no background CSS on this table, so after clearing inline
+        // all cells are transparent. Re-stripe only VISIBLE rows (skip those
+        // hidden by SimPro's .hide tab filter) so the visible sequence is
+        // correctly 1st=grey, 2nd=white, etc. Use setTimeout(0) so SimPro's
+        // display:none from .hide is already applied before we measure it.
+        setTimeout(() => {
+          let si = 1;
+          for (const tr of table.querySelectorAll('tbody tr.assignFromStock')) {
+            if (window.getComputedStyle(tr).display === 'none') continue;
+            const isOdd = si % 2 === 1;
+            for (const td of tr.children) {
+              if (td.tagName === 'TD' && !td.classList.contains('mt-cell') && !td.classList.contains('mt-check'))
+                td.style.setProperty('background-color', isOdd ? STRIPE_ODD : STRIPE_EVEN, 'important');
+            }
+            si++;
+          }
+        }, 0);
       } else {
         // Back on Allocated — re-apply inline stripe on native TDs to beat
         // any SimPro inline !important that survived the tab switch.
