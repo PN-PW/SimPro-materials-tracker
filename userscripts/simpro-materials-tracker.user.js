@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimPro Materials Tracker
 // @namespace    https://powernaturally.simprosuite.com/
-// @version      1.8.1
+// @version      1.8.2
 // @description  Track delivery route, tracking number, ETA and status per material allocation on SimPro cost-centre pages. Multi-user with realtime sync, audit log, filter chips, CSV export, bulk ETA, CC-log CSV, and BI progress overlay — backed by Supabase.
 // @author       PowerNaturally
 // @match        https://powernaturally.simprosuite.com/staff/editCostCentre.php*
@@ -235,6 +235,11 @@
   //  2. STYLES — tuned to match SimPro (Roboto, rgb(35,42,47), white BG, blue #3071a9).
   // ═══════════════════════════════════════════════════════════════════════════
   GM_addStyle(`
+    /* ── Allocated-tab guard — hide MT columns on all other stock sub-tabs ── */
+    #materialsTable:not(.mt-allocated-active) td.mt-cell,
+    #materialsTable:not(.mt-allocated-active) td.mt-check,
+    #materialsTable:not(.mt-allocated-active) th.mt-col-head { display: none !important; }
+
     /* ── Table column cells ──────────────────────────────────────────────── */
     #materialsTable td.mt-cell {
       font-family: Roboto, sans-serif;
@@ -2272,6 +2277,25 @@ Bar % = average weight across all lines.">
     // First-time filter pass so chip counts show the real totals straight away.
     filterApi.reapply?.();
 
+    // ── Stock sub-tab awareness ───────────────────────────────────────────────
+    // MT columns + bulk bar are only relevant on the "Allocated" sub-tab.
+    // When any other sub-tab is active, hide them via a CSS class toggle so the
+    // Required / In Stock / Order views remain uncluttered.
+    const STOCK_SUB_TABS = new Set(['All', 'Required', 'Allocated', 'In Stock', 'Order']);
+    function syncAllocatedView() {
+      const activeStockTab = [...document.querySelectorAll('a.subTab')]
+        .find(a => STOCK_SUB_TABS.has(a.querySelector('span')?.textContent.trim()) && a.classList.contains('current'))
+        ?.querySelector('span')?.textContent.trim();
+      const isAllocated = activeStockTab === 'Allocated';
+      table.classList.toggle('mt-allocated-active', isAllocated);
+      if (bar) bar.style.display = isAllocated ? '' : 'none';
+    }
+    const stockTabLinks = [...document.querySelectorAll('a.subTab')]
+      .filter(a => STOCK_SUB_TABS.has(a.querySelector('span')?.textContent.trim()));
+    const stockSubTabObserver = new MutationObserver(syncAllocatedView);
+    stockTabLinks.forEach(a => stockSubTabObserver.observe(a, { attributes: true, attributeFilter: ['class'] }));
+    syncAllocatedView(); // set initial state on page load
+
     subscribeRealtime(ctx, payload => {
       const n = payload.new, o = payload.old;
       const rec = n || o;
@@ -2340,6 +2364,7 @@ Bar % = average weight across all lines.">
             filterApi, ctx,
           });
           renderProgress(bar, allRecords());
+          syncAllocatedView(); // re-apply tab visibility after bar re-inject
         }
       }
       // Always re-apply the filter after ANY mutation — this re-asserts our
