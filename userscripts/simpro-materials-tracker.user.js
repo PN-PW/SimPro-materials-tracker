@@ -1,12 +1,14 @@
 // ==UserScript==
 // @name         SimPro Materials Tracker
 // @namespace    https://powernaturally.simprosuite.com/
-// @version      1.8.2
+// @version      1.8.3
 // @description  Track delivery route, tracking number, ETA and status per material allocation on SimPro cost-centre pages. Multi-user with realtime sync, audit log, filter chips, CSV export, bulk ETA, CC-log CSV, and BI progress overlay — backed by Supabase.
 // @author       PowerNaturally
 // @match        https://powernaturally.simprosuite.com/staff/editCostCentre.php*
 // @match        https://powernaturally.simprosuite.com/staff/editProject.php*
 // @match        https://reportbuilder.simprosuite.com/question/*
+// @updateURL    https://raw.githubusercontent.com/PN-PW/SimPro-materials-tracker/master/userscripts/simpro-materials-tracker.user.js
+// @downloadURL  https://raw.githubusercontent.com/PN-PW/SimPro-materials-tracker/master/userscripts/simpro-materials-tracker.user.js
 // @require      https://unpkg.com/@supabase/supabase-js@2.45.4/dist/umd/supabase.js
 // @grant        GM_addStyle
 // @grant        GM_getValue
@@ -238,7 +240,8 @@
     /* ── Allocated-tab guard — hide MT columns on all other stock sub-tabs ── */
     #materialsTable:not(.mt-allocated-active) td.mt-cell,
     #materialsTable:not(.mt-allocated-active) td.mt-check,
-    #materialsTable:not(.mt-allocated-active) th.mt-col-head { display: none !important; }
+    #materialsTable:not(.mt-allocated-active) th.mt-col-head,
+    #materialsTable:not(.mt-allocated-active) th.mt-check { display: none !important; }
 
     /* ── Table column cells ──────────────────────────────────────────────── */
     #materialsTable td.mt-cell {
