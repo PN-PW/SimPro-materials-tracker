@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimPro Materials Tracker
 // @namespace    https://powernaturally.simprosuite.com/
-// @version      1.9.0
+// @version      1.9.1
 // @description  Track delivery route, tracking number, ETA and status per material allocation on SimPro cost-centre pages. Multi-user with realtime sync, audit log, filter chips, CSV export, bulk ETA, CC-log CSV, and BI progress overlay — backed by Supabase.
 // @author       PowerNaturally
 // @match        https://powernaturally.simprosuite.com/staff/editCostCentre.php*
@@ -21,6 +21,38 @@
 
 /* global supabase, GM_addStyle, GM_getValue, GM_setValue, GM_deleteValue, GM_xmlhttpRequest */
 
+// ─── v1.9.1 changelog ─────────────────────────────────────────────────────
+//   BUG FIX — Allocated tab showed ALL material rows, not just formally-assigned ones.
+//
+//   Root cause:
+//   applyFilter() used `display:table-row !important` on every injected row
+//   whenever the Allocated tab was active — regardless of whether SimPro had
+//   actually allocated that row (AllocatedStock CSS class).  For a fresh job
+//   (nothing drawn from stock yet) SimPro's Allocated tab is correctly empty,
+//   but our script was overriding SimPro's `.hide` filter and force-showing all
+//   10 rows there, with Assigned = 0 [0] for every line.  This also meant two
+//   users on the same job could appear to see different data depending on which
+//   tab they had open.
+//
+//   Fix A — Allocated tab row visibility (applyFilter):
+//   On the Allocated tab, only rows that carry SimPro's `AllocatedStock` CSS
+//   class are force-shown (these are materials SimPro has formally drawn from
+//   stock for the job).  All other rows get `removeProperty('display')` so
+//   SimPro's `.hide` class hides them correctly.  The Allocated tab now shows
+//   exactly what SimPro says is allocated — nothing more.
+//
+//   Fix B — MT columns on All tab (syncAllocatedView):
+//   Because the Allocated tab is empty for fresh jobs, users need another tab
+//   where MT controls are accessible.  MT columns + bulk bar are now shown on
+//   both the Allocated tab AND the All tab (`isMtActive` flag).  Required /
+//   In Stock / Order tabs remain uncluttered (MT columns hidden).
+//
+//   Fix C — Unified stripe logic (syncAllocatedView):
+//   The previous code had separate stripe paths for Allocated vs. other tabs.
+//   All tab switches now use the same clear-then-recount-visible pattern with
+//   setTimeout(0), which correctly handles any tab (including Allocated when
+//   only a subset of rows are visible).
+//
 // ─── v1.9.0 changelog ─────────────────────────────────────────────────────
 //   BUG FIX — MT cells locked on ALL rows for jobs with no stock assigned yet.
 //
@@ -1982,6 +2014,10 @@ Bar % = average weight across all lines.">
       issues:  new Set(['issue', 'returned']),
     };
     let activeFilter = 'all';
+    // Tracks the active stock sub-tab name ('All', 'Allocated', 'Required', etc.).
+    // Set by syncAllocatedView (defined below) and read by applyFilter.
+    // Initialised to 'All' — syncAllocatedView corrects it on first run.
+    let currentStockTab = 'All';
     const chipEls  = [...bar.querySelectorAll('.mt-chip')];
     const countEls = Object.fromEntries(
       [...bar.querySelectorAll('.mt-chip-count')].map(el => [el.dataset.for, el])
@@ -2013,13 +2049,18 @@ Bar % = average weight across all lines.">
         // momentarily out of sync with the DOM.
         const match = !wanted || !rec || wanted.has(rec.status);
         if (match) {
-          if (document.querySelector('#materialsTable')?.classList.contains('mt-allocated-active')) {
-            // On the Allocated tab: force visible with !important so SimPro's
-            // autosave `.hide { display:none }` re-additions can't hide our rows.
+          if (currentStockTab === 'Allocated' && tr.classList.contains('AllocatedStock')) {
+            // On the Allocated tab, only force-show rows that SimPro has formally
+            // allocated (AllocatedStock CSS class = stock drawn from inventory for
+            // this job).  This keeps the Allocated tab faithful to SimPro — it shows
+            // exactly what SimPro considers assigned, no more.  Non-allocated rows
+            // (RequiredStock-only) are hidden by SimPro's .hide class; we must not
+            // override that or the tab becomes a dump of all materials.
             tr.style.setProperty('display', 'table-row', 'important');
           } else {
-            // On other tabs (Required, All, In Stock, Order): remove our override
-            // so SimPro's native tab filtering (`.hide`) works normally.
+            // All other cases (All tab, Required, In Stock, Order, or non-allocated
+            // rows on Allocated tab): remove our display override so SimPro's native
+            // tab filtering (.hide → display:none) applies correctly.
             tr.style.removeProperty('display');
           }
           shown++;
@@ -2458,59 +2499,43 @@ Bar % = average weight across all lines.">
     filterApi.reapply?.();
 
     // ── Stock sub-tab awareness ───────────────────────────────────────────────
-    // MT columns + bulk bar are only relevant on the "Allocated" sub-tab.
-    // When any other sub-tab is active, hide them via a CSS class toggle so the
-    // Required / In Stock / Order views remain uncluttered.
+    // MT columns + bulk bar are shown on the "Allocated" and "All" sub-tabs.
+    // • Allocated: shows only SimPro-assigned rows (AllocatedStock class).
+    // • All:       shows all rows including unallocated stock — the working tab
+    //              for fresh jobs where nothing has been formally drawn yet.
+    // Required / In Stock / Order views remain uncluttered (MT columns hidden).
     const STOCK_SUB_TABS = new Set(['All', 'Required', 'Allocated', 'In Stock', 'Order']);
     function syncAllocatedView() {
-      const activeStockTab = [...document.querySelectorAll('a.subTab')]
+      currentStockTab = [...document.querySelectorAll('a.subTab')]
         .find(a => STOCK_SUB_TABS.has(a.querySelector('span')?.textContent.trim()) && a.classList.contains('current'))
-        ?.querySelector('span')?.textContent.trim();
-      const isAllocated = activeStockTab === 'Allocated';
-      table.classList.toggle('mt-allocated-active', isAllocated);
-      if (bar) bar.style.display = isAllocated ? '' : 'none';
-      if (!isAllocated) {
-        // Remove inline background-color from ALL striped native TDs (both
-        // injected and non-injected rows) so SimPro's own row colours take
-        // over on Required / All / In Stock / Order. MT cells (.mt-cell,
-        // .mt-check) never receive inline stripe so excluding them is a no-op
-        // but makes intent clear.
-        for (const td of table.querySelectorAll(
-          'tbody tr:is(.mt-row-odd,.mt-row-even) > td:not(.mt-cell):not(.mt-check)'
-        )) {
-          td.style.removeProperty('background-color');
-        }
-        // SimPro has no background CSS on this table, so after clearing inline
-        // all cells are transparent. Re-stripe only VISIBLE rows (skip those
-        // hidden by SimPro's .hide tab filter) so the visible sequence is
-        // correctly 1st=grey, 2nd=white, etc. Use setTimeout(0) so SimPro's
-        // display:none from .hide is already applied before we measure it.
-        setTimeout(() => {
-          let si = 1;
-          for (const tr of table.querySelectorAll('tbody tr.assignFromStock')) {
-            if (window.getComputedStyle(tr).display === 'none') continue;
-            const isOdd = si % 2 === 1;
-            for (const td of tr.children) {
-              if (td.tagName === 'TD' && !td.classList.contains('mt-cell') && !td.classList.contains('mt-check'))
-                td.style.setProperty('background-color', isOdd ? STRIPE_ODD : STRIPE_EVEN, 'important');
-            }
-            si++;
-          }
-        }, 0);
-      } else {
-        // Back on Allocated — re-apply inline stripe on native TDs to beat
-        // any SimPro inline !important that survived the tab switch.
-        // Read odd/even from the class already on the row (set during the
-        // initial injection) rather than counting from scratch, so rows
-        // without a tracking record don't break the sequence.
-        for (const tr of table.querySelectorAll('tbody tr:is(.mt-row-odd,.mt-row-even)')) {
-          const isOdd = tr.classList.contains('mt-row-odd');
+        ?.querySelector('span')?.textContent.trim() || 'All';
+      // MT columns and bulk bar visible on both Allocated and All tabs.
+      const isMtActive = currentStockTab === 'Allocated' || currentStockTab === 'All';
+      table.classList.toggle('mt-allocated-active', isMtActive);
+      if (bar) bar.style.display = isMtActive ? '' : 'none';
+      // Always clear inline background-color from native TDs first, then
+      // re-stripe only the rows that are visible after SimPro's tab filtering
+      // and applyFilter (called at the end) have settled.  setTimeout(0) ensures
+      // the DOM display changes from applyFilter are committed before we read
+      // getComputedStyle — this is correct for every tab including Allocated
+      // (which now only shows a subset of rows: those with AllocatedStock class).
+      for (const td of table.querySelectorAll(
+        'tbody tr:is(.mt-row-odd,.mt-row-even) > td:not(.mt-cell):not(.mt-check)'
+      )) {
+        td.style.removeProperty('background-color');
+      }
+      setTimeout(() => {
+        let si = 1;
+        for (const tr of table.querySelectorAll('tbody tr.assignFromStock')) {
+          if (window.getComputedStyle(tr).display === 'none') continue;
+          const isOdd = si % 2 === 1;
           for (const td of tr.children) {
             if (td.tagName === 'TD' && !td.classList.contains('mt-cell') && !td.classList.contains('mt-check'))
               td.style.setProperty('background-color', isOdd ? STRIPE_ODD : STRIPE_EVEN, 'important');
           }
+          si++;
         }
-      }
+      }, 0);
       filterApi.reapply?.();
     }
     const stockTabLinks = [...document.querySelectorAll('a.subTab')]
