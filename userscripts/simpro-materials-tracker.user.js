@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimPro Materials Tracker
 // @namespace    https://powernaturally.simprosuite.com/
-// @version      1.8.9
+// @version      1.9.0
 // @description  Track delivery route, tracking number, ETA and status per material allocation on SimPro cost-centre pages. Multi-user with realtime sync, audit log, filter chips, CSV export, bulk ETA, CC-log CSV, and BI progress overlay — backed by Supabase.
 // @author       PowerNaturally
 // @match        https://powernaturally.simprosuite.com/staff/editCostCentre.php*
@@ -21,6 +21,31 @@
 
 /* global supabase, GM_addStyle, GM_getValue, GM_setValue, GM_deleteValue, GM_xmlhttpRequest */
 
+// ─── v1.9.0 changelog ─────────────────────────────────────────────────────
+//   BUG FIX — MT cells locked on ALL rows for jobs with no stock assigned yet.
+//
+//   Root cause (browser-verified on job #5770):
+//   The mt-unassigned check used only the assignment spinner value
+//   (stockInput.value = 0) to decide whether to gray-out MT cells.  For a
+//   fresh job where no stock has been formally drawn yet, EVERY row has
+//   stockInput.value = 0 — so every row was locked, making the tracker
+//   completely unusable until someone ran the SimPro "Assign from Stock" step.
+//
+//   Browser inspection confirmed:
+//   • 10 injected rows, all with In Stock > 0 (e.g. "2 [0]" at cells[9])
+//   • 0 rows with stockInput.value > 0 (nothing formally assigned)
+//   • 10/10 rows wrongly marked mt-unassigned → all MT cells grayed/disabled
+//   • No row carried an "AllocatedStock" CSS class — SimPro's Allocated tab
+//     is semantically empty for this job; rows only had AllStock + RequiredStock
+//
+//   Fix: parseAllocationRows now reads cells[9] ("In Stock" column) to extract
+//   in_stock_qty for main rows.  injectRowCells uses the dual condition:
+//     unassigned = !assigned_qty && !in_stock_qty
+//   A row with stock available at its location (In Stock > 0) is NEVER locked,
+//   even if nothing has been formally drawn yet.  Only rows with genuinely
+//   nothing to track (In Stock = 0 AND Assigned = 0) are grayed out.
+//   recheckAssignedState (v1.8.9 timing fix) mirrors the same condition.
+//
 // ─── v1.8.9 changelog ─────────────────────────────────────────────────────
 //   BUG FIX — multi-user: one user sees MT cells locked (grayed-out), the
 //   other sees them working correctly on the same job at the same time.
@@ -897,10 +922,19 @@
       const location_name = isSubRow
         ? (cells[1]?.innerText || '').trim() || null
         : (cells[8]?.innerText || '').trim() || null;
+      // in_stock_qty: how many units are physically available at this location.
+      // Main rows only — cells[9] is the "In Stock" column (e.g. "2 [0]" where 2
+      // is the physical count and [0] is the already-reserved amount).
+      // parseFloat stops at the first non-numeric character, so "2 [0]" → 2.
+      // Sub-rows do not have a dedicated In Stock cell (they inherit from the
+      // parent location), so we leave it null and rely on assigned_qty there.
+      const in_stock_qty = isSubRow
+        ? null
+        : (parseFloat(cells[9]?.innerText || '') || null);
 
       out.push({
         row, material_id, location_id, occurrence_index,
-        material_name, required_qty, assigned_qty, location_name,
+        material_name, required_qty, assigned_qty, in_stock_qty, location_name,
       });
     }
     return out;
@@ -1281,9 +1315,13 @@
     row.dataset.mtInjected = '1';
     row.dataset.mtRecordId = record.id;
     const readonly   = currentUserRole === 'readonly';
-    // Lock MT controls when nothing has been pulled from stock yet.
-    // assigned_qty is null/0 when SimPro shows "0" in the Assigned column.
-    const unassigned = !parsedRow.assigned_qty;
+    // A row is "unassigned" (MT cells locked) only when BOTH the assignment
+    // spinner AND the In Stock quantity are zero/null — i.e. there is genuinely
+    // nothing physical to track yet.  If stock is available at the location
+    // (in_stock_qty > 0) the row is trackable even before SimPro's formal
+    // assignment step, so warehouse staff can pre-fill route/tracking/ETA
+    // before the job formally draws from stock.
+    const unassigned = !parsedRow.assigned_qty && !parsedRow.in_stock_qty;
     if (unassigned) row.classList.add('mt-unassigned');
 
     // Leading checkbox cell — disabled for readonly users (no bulk apply available)
@@ -2388,7 +2426,9 @@ Bar % = average weight across all lines.">
         const inp = r.row.querySelector('input[name^="stock["]');
         if (!inp) continue;
         const freshQty = parseFloat(inp.value || '') || null;
-        const shouldBeUnassigned = !freshQty;
+        // Mirror the same dual-condition used in injectRowCells: a row is only
+        // unassigned when BOTH the stock spinner AND the in_stock_qty are absent.
+        const shouldBeUnassigned = !freshQty && !r.in_stock_qty;
         const isUnassigned = r.row.classList.contains('mt-unassigned');
         if (isUnassigned !== shouldBeUnassigned) {
           r.row.classList.toggle('mt-unassigned', shouldBeUnassigned);
