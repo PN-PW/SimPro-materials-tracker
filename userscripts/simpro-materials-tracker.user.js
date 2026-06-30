@@ -1,7 +1,7 @@
-// ==UserScript==
+﻿// ==UserScript==
 // @name         SimPro Materials Tracker
 // @namespace    https://powernaturally.simprosuite.com/
-// @version      1.9.2
+// @version      1.9.3
 // @description  Track delivery route, tracking number, ETA and status per material allocation on SimPro cost-centre pages. Multi-user with realtime sync, audit log, filter chips, CSV export, bulk ETA, CC-log CSV, and BI progress overlay — backed by Supabase.
 // @author       PowerNaturally
 // @match        https://powernaturally.simprosuite.com/staff/editCostCentre.php*
@@ -21,6 +21,11 @@
 
 /* global supabase, GM_addStyle, GM_getValue, GM_setValue, GM_deleteValue, GM_xmlhttpRequest */
 
+// ─── v1.9.3 changelog ─────────────────────────────────────────────────────
+//   STYLE — Removed 47 multi-space-before-= alignment patterns throughout the
+//   script.  Tampermonkey's linter (no-multi-spaces rule) flagged these as
+//   warnings on every install.  No functional change.
+//
 // ─── v1.9.2 changelog ─────────────────────────────────────────────────────
 //   BUG FIX — "currentStockTab is not defined" + row checkboxes gone.
 //
@@ -937,7 +942,7 @@
     // Sub-rows have only ~7 native TDs (cells[0] is an empty colspan=8 cell)
     // vs ~15 for main material rows, so we detect them by cell count < 10.
     let lastMaterialName = null;
-    let lastRequiredQty  = null;
+    let lastRequiredQty = null;
     for (const row of rows) {
       const stockInput = row.querySelector('input[name^="stock["]');
       if (!stockInput) continue;
@@ -957,16 +962,16 @@
       if (!isSubRow) {
         // Main row — update carry-forward state.
         lastMaterialName = (cells[0]?.innerText || '').trim().slice(0, 300) || null;
-        lastRequiredQty  = parseFloat(cells[1]?.innerText || '') || null;
+        lastRequiredQty = parseFloat(cells[1]?.innerText || '') || null;
       }
       const material_name = isSubRow ? lastMaterialName
         : (cells[0]?.innerText || '').trim().slice(0, 300) || null;
-      const required_qty  = isSubRow ? lastRequiredQty
+      const required_qty = isSubRow ? lastRequiredQty
         : parseFloat(cells[1]?.innerText || '') || null;
       // stockInput.value is the qty being assigned from this specific location —
       // the same input that SimPro uses for the allocation spinner.  Using
       // innerText would always give '' for <input> elements (fixed in v1.6.6).
-      const assigned_qty  = parseFloat(stockInput.value || '') || null;
+      const assigned_qty = parseFloat(stockInput.value || '') || null;
       // Sub-row: location label is in cells[1] ("Stored at PN_Darren H. Stock").
       // Main row: location label is in cells[8] (the warehouse name cell).
       const location_name = isSubRow
@@ -1365,7 +1370,7 @@
     if (row.dataset.mtInjected) return;
     row.dataset.mtInjected = '1';
     row.dataset.mtRecordId = record.id;
-    const readonly   = currentUserRole === 'readonly';
+    const readonly = currentUserRole === 'readonly';
     // A row is "unassigned" (MT cells locked) only when BOTH the assignment
     // spinner AND the In Stock quantity are zero/null — i.e. there is genuinely
     // nothing physical to track yet.  If stock is available at the location
@@ -1657,7 +1662,7 @@
       }
       list.innerHTML = entries.map(e => {
         const when = fmtDateTime(e.changed_at);
-        const who  = userEmailForAudit(e.changed_by);
+        const who = userEmailForAudit(e.changed_by);
         const meta = `<span class="mt-audit-meta">
             <span class="mt-audit-when">${escapeHtml(when)}</span>
             <span class="mt-audit-who">${escapeHtml(who)}</span>
@@ -1746,7 +1751,7 @@
       list.innerHTML = entries.map(e => {
         const info = nameMap.get(e.record_id) || { mat: '(deleted)', loc: '—' };
         const when = fmtDateTime(e.changed_at);
-        const who  = userEmailForAudit(e.changed_by);
+        const who = userEmailForAudit(e.changed_by);
         const meta = `<span class="mt-audit-meta">
           <span class="mt-audit-when">${escapeHtml(when)}</span>
           <span class="mt-audit-who">${escapeHtml(who)}</span>
@@ -1784,7 +1789,7 @@
           for (const ev of entries) {
             const info = nameMap.get(ev.record_id) || { mat: '(deleted)', loc: '—' };
             const when = fmtDateTime(ev.changed_at);
-            const who  = userEmailForAudit(ev.changed_by);
+            const who = userEmailForAudit(ev.changed_by);
             if (ev.op === 'INSERT') {
               csvRows.push([when, who, info.mat, info.loc, 'created', '', '']);
             } else {
@@ -1799,9 +1804,9 @@
           // UTF-8 BOM (﻿) tells Excel the file is UTF-8 so em dashes,
           // arrows and other non-ASCII chars render correctly instead of â€" etc.
           const blob = new Blob(['﻿' + csvText], { type: 'text/csv;charset=utf-8;' });
-          const url  = URL.createObjectURL(blob);
-          const a    = document.createElement('a');
-          a.href     = url;
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
           a.download = `CC-Log-${ctx.costCentreID}-${new Date().toISOString().slice(0, 10)}.csv`;
           a.click();
           URL.revokeObjectURL(url);
@@ -1942,11 +1947,11 @@ Bar % = average weight across all lines.">
       const tracking = trackingRaw.trim();
       // ETA: precedence is "Clear ETA" checkbox > date input > no change.
       const etaInputVal = bar.querySelector('.mt-bulk-eta').value;
-      const etaClear    = bar.querySelector('.mt-bulk-eta-clear').checked;
+      const etaClear = bar.querySelector('.mt-bulk-eta-clear').checked;
       let etaTouched = false;
       const changes = {};
-      if (route)        changes.route       = route;
-      if (status)       changes.status      = status;
+      if (route)        changes.route = route;
+      if (status)       changes.status = status;
       if (tracking)     changes.tracking_no = tracking;
       if (etaClear)              { changes.eta = null;        etaTouched = true; }
       else if (etaInputVal)      { changes.eta = etaInputVal; etaTouched = true; }
@@ -2008,10 +2013,10 @@ Bar % = average weight across all lines.">
       if (headerCheck()) headerCheck().checked = false;
       bulkAll.checked = false;
       updateSelectedCount();
-      bar.querySelector('.mt-bulk-route').value  = '';
+      bar.querySelector('.mt-bulk-route').value = '';
       bar.querySelector('.mt-bulk-status').value = '';
-      bar.querySelector('.mt-bulk-track').value  = '';
-      bar.querySelector('.mt-bulk-eta').value    = '';
+      bar.querySelector('.mt-bulk-track').value = '';
+      bar.querySelector('.mt-bulk-eta').value = '';
       bar.querySelector('.mt-bulk-eta-clear').checked = false;
       bar.classList.remove('mt-bulk-eta-clearing');
       onRefresh?.();
@@ -2033,7 +2038,7 @@ Bar % = average weight across all lines.">
       issues:  new Set(['issue', 'returned']),
     };
     let activeFilter = 'all';
-    const chipEls  = [...bar.querySelectorAll('.mt-chip')];
+    const chipEls = [...bar.querySelectorAll('.mt-chip')];
     const countEls = Object.fromEntries(
       [...bar.querySelectorAll('.mt-chip-count')].map(el => [el.dataset.for, el])
     );
@@ -2154,7 +2159,7 @@ Bar % = average weight across all lines.">
       );
       const recs = [...recordsRef.byId.values()].filter(r => visibleIds.has(String(r.id)));
       if (!recs.length) { toast('Nothing to export — no tracked rows visible.'); return; }
-      const ROUTE_LABEL  = Object.fromEntries(ROUTES.map(r => [r.value, r.label]));
+      const ROUTE_LABEL = Object.fromEntries(ROUTES.map(r => [r.value, r.label]));
       const STATUS_LABEL = Object.fromEntries(STATUSES.map(s => [s.value, s.label]));
       const esc = v => {
         const s = v == null ? '' : String(v);
@@ -2256,7 +2261,7 @@ Bar % = average weight across all lines.">
       }
       const csv = '\uFEFF' + lines.join('\r\n');
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-      const url  = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       const stamp = new Date().toISOString().slice(0, 16).replace(/[-T:]/g, '');
       a.href = url;
@@ -2314,7 +2319,7 @@ Bar % = average weight across all lines.">
     const pct = computeProgressPct(records);
     log('renderProgress', pct + '%', 'across', records.length, 'records');
     const prog = bar.querySelector('progress.mt-progress-native');
-    const txt  = bar.querySelector('.mt-progress-text');
+    const txt = bar.querySelector('.mt-progress-text');
     if (prog) prog.value = pct;
     if (txt)  txt.textContent = pct + '%';
   }
@@ -2411,11 +2416,11 @@ Bar % = average weight across all lines.">
     function refreshRowUi(rec) {
       const tr = document.querySelector(`#materialsTable tr[data-mt-record-id="${rec.id}"]`);
       if (!tr) return;
-      const routeSel  = tr.querySelector('.mt-route');
+      const routeSel = tr.querySelector('.mt-route');
       const statusSel = tr.querySelector('.mt-status');
-      const trackInp  = tr.querySelector('.mt-track');
+      const trackInp = tr.querySelector('.mt-track');
       const trackCopy = tr.querySelector('.mt-track-copy');
-      const etaInp    = tr.querySelector('.mt-eta');
+      const etaInp = tr.querySelector('.mt-eta');
       // Route + Status: always re-sync, even if the element is focused.
       // The previous code skipped the update when document.activeElement
       // happened to equal the select, which occasionally masked bulk-apply
@@ -2443,7 +2448,7 @@ Bar % = average weight across all lines.">
     // the first row is immediately distinguishable from the header strip
     // above it — previously both were white and blended into one visual band.
     let stripeIdx = 1;
-    const STRIPE_ODD  = '#eef2f7';
+    const STRIPE_ODD = '#eef2f7';
     const STRIPE_EVEN = '#ffffff';
     for (const r of rows) {
       // Always stripe the row FIRST — even rows without a tracking record (e.g.
@@ -2997,15 +3002,15 @@ Bar % = average weight across all lines.">
     );
     const progressLeft = (parseFloat(lastHdrCell.style.left) || 0)
                        + (parseFloat(lastHdrCell.style.width) || 120);
-    const PROG_W  = 90;   // px width of the injected column
-    const cellH   = parseFloat(headerCells[0]?.style.height) || 36;
+    const PROG_W = 90;   // px width of the injected column
+    const cellH = parseFloat(headerCells[0]?.style.height) || 36;
 
     log('BI: CC col left=' + ccLeft + 'px | progress col left=' + progressLeft + 'px');
 
     // ── Locate the data grid ─────────────────────────────────────────────────
-    const headerGrid    = tableInteractive.querySelector(
+    const headerGrid = tableInteractive.querySelector(
                             '.ReactVirtualized__Grid.TableInteractive-header');
-    const dataGrid      = [...tableInteractive.querySelectorAll('.ReactVirtualized__Grid')]
+    const dataGrid = [...tableInteractive.querySelectorAll('.ReactVirtualized__Grid')]
                             .find(g => !g.classList.contains('TableInteractive-header'));
     const dataContainer = dataGrid?.querySelector('.ReactVirtualized__Grid__innerScrollContainer');
     if (!dataGrid || !dataContainer) {
@@ -3096,8 +3101,8 @@ Bar % = average weight across all lines.">
     }
 
     // ── Shared base style for all overlay elements ────────────────────────────
-    const OVERLAY_BASE   = 'position:fixed;z-index:9999;width:' + PROG_W + 'px;box-sizing:border-box';
-    const ROW_DIM_BASE   = 'position:fixed;z-index:9998;pointer-events:none';
+    const OVERLAY_BASE = 'position:fixed;z-index:9999;width:' + PROG_W + 'px;box-sizing:border-box';
+    const ROW_DIM_BASE = 'position:fixed;z-index:9998;pointer-events:none';
 
     // ── Element pool: reuse divs to eliminate flicker during scroll ───────────
     // We never remove pool elements — just update their style or hide them.
@@ -3196,7 +3201,7 @@ Bar % = average weight across all lines.">
       e.stopPropagation();
       const r = biHdrOverlay.getBoundingClientRect();
       biFilterPanel.style.left = r.left + 'px';
-      biFilterPanel.style.top  = (r.bottom + 2) + 'px';
+      biFilterPanel.style.top = (r.bottom + 2) + 'px';
       biFilterPanel.style.display = biFilterPanel.style.display === 'none' ? 'block' : 'none';
     });
     document.addEventListener('click', () => { biFilterPanel.style.display = 'none'; });
@@ -3224,10 +3229,10 @@ Bar % = average weight across all lines.">
           headers: { 'Content-Type': 'application/json' }, body: '{}',
         });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const rawCsv  = await resp.text();
-        const rows    = rawCsv.split('\n');
+        const rawCsv = await resp.text();
+        const rows = rawCsv.split('\n');
         const hdrCols = parseCsvRow(rows[0] || '');
-        const ccCol   = hdrCols.findIndex(c => /cost.?centre.?id/i.test(c));
+        const ccCol = hdrCols.findIndex(c => /cost.?centre.?id/i.test(c));
 
         const out = [rows[0].trimEnd() + ',Progress %'];
         for (let i = 1; i < rows.length; i++) {
@@ -3240,8 +3245,8 @@ Bar % = average weight across all lines.">
           out.push(line.trimEnd() + ',' + pctText);
         }
         const blob = new Blob([out.join('\n')], { type: 'text/csv' });
-        const url  = URL.createObjectURL(blob);
-        const a    = Object.assign(document.createElement('a'),
+        const url = URL.createObjectURL(blob);
+        const a = Object.assign(document.createElement('a'),
                        { href: url, download: 'materials-progress-export.csv' });
         document.body.appendChild(a); a.click();
         document.body.removeChild(a); URL.revokeObjectURL(url);
@@ -3258,7 +3263,7 @@ Bar % = average weight across all lines.">
     // ── Position header overlay ────────────────────────────────────────────────
     function positionHdrOverlay() {
       const tableRect = tableInteractive.getBoundingClientRect();
-      const hdrRect   = (headerGrid || tableInteractive).getBoundingClientRect();
+      const hdrRect = (headerGrid || tableInteractive).getBoundingClientRect();
       biHdrOverlay.style.cssText = [
         OVERLAY_BASE,
         'pointer-events:all',
@@ -3281,22 +3286,22 @@ Bar % = average weight across all lines.">
     let biRafPending = false;
     function updateBiOverlays() {
       biRafPending = false;
-      const tableRect    = tableInteractive.getBoundingClientRect();
-      const fixedLeft    = tableRect.left + progressLeft;
+      const tableRect = tableInteractive.getBoundingClientRect();
+      const fixedLeft = tableRect.left + progressLeft;
       const dataGridRect = dataGrid.getBoundingClientRect();
       // Row-dim strip spans the full visible width of the data grid
-      const dimWidth     = dataGridRect.width;
+      const dimWidth = dataGridRect.width;
 
       // Find currently-rendered CC data cells (same left offset ±2 px as header)
       const ccCells = [...dataContainer.querySelectorAll('.TableInteractive-cellWrapper')]
         .filter(c => Math.abs((parseFloat(c.style.left) || 0) - ccLeft) < 2);
 
       for (let i = 0; i < ccCells.length; i++) {
-        const cell   = ccCells[i];
-        const ccId   = parseInt((cell.textContent || '').trim(), 10);
-        const rect   = cell.getBoundingClientRect();
-        const el     = getPoolEl(i);
-        const dimEl  = getRowDimEl(i);
+        const cell = ccCells[i];
+        const ccId = parseInt((cell.textContent || '').trim(), 10);
+        const rect = cell.getBoundingClientRect();
+        const el = getPoolEl(i);
+        const dimEl = getRowDimEl(i);
 
         // Hide if off-screen OR scrolled above the data grid (would overlap Metabase nav/header)
         const offScreen = isNaN(ccId) || ccId <= 0
@@ -3385,7 +3390,7 @@ Bar % = average weight across all lines.">
       const hr = (headerGrid || tableInteractive).getBoundingClientRect();
       const tr = tableInteractive.getBoundingClientRect();
       if (hr.top !== _phTop || tr.left !== _phLeft) {
-        _phTop  = hr.top;
+        _phTop = hr.top;
         _phLeft = tr.left;
         positionHdrOverlay();
         scheduleUpdate();
