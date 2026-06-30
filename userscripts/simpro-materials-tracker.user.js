@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         SimPro Materials Tracker
 // @namespace    https://powernaturally.simprosuite.com/
-// @version      1.9.1
+// @version      1.9.2
 // @description  Track delivery route, tracking number, ETA and status per material allocation on SimPro cost-centre pages. Multi-user with realtime sync, audit log, filter chips, CSV export, bulk ETA, CC-log CSV, and BI progress overlay — backed by Supabase.
 // @author       PowerNaturally
 // @match        https://powernaturally.simprosuite.com/staff/editCostCentre.php*
@@ -21,6 +21,24 @@
 
 /* global supabase, GM_addStyle, GM_getValue, GM_setValue, GM_deleteValue, GM_xmlhttpRequest */
 
+// ─── v1.9.2 changelog ─────────────────────────────────────────────────────
+//   BUG FIX — "currentStockTab is not defined" + row checkboxes gone.
+//
+//   Root cause:
+//   currentStockTab was declared with `let` inside injectBulkBar() (IIFE-level
+//   function), but syncAllocatedView() is defined inside bootstrapCostCentreEdit()
+//   — a different scope chain.  In strict mode, the assignment
+//   `currentStockTab = ...` in syncAllocatedView threw ReferenceError because
+//   the variable was not visible through its scope chain.  The function aborted
+//   before table.classList.toggle('mt-allocated-active', ...) could run, so the
+//   CSS guard permanently hid all .mt-check cells → checkboxes disappeared.
+//
+//   Fix:
+//   Moved `let currentStockTab = 'All'` to the IIFE level (alongside
+//   currentUser / currentUserRole) where both injectBulkBar's applyFilter
+//   closure and syncAllocatedView can reach it through the scope chain.
+//   Removed the shadowing declaration from inside injectBulkBar.
+//
 // ─── v1.9.1 changelog ─────────────────────────────────────────────────────
 //   BUG FIX — Allocated tab showed ALL material rows, not just formally-assigned ones.
 //
@@ -978,6 +996,7 @@
   let sb = null;
   let currentUser = null;
   let currentUserRole = null;     // 'admin' | 'editor' | 'readonly' — populated after sign-in
+  let currentStockTab = 'All';   // active stock sub-tab; written by syncAllocatedView, read by applyFilter
 
   function initClient() {
     if (sb) return sb;
@@ -2014,10 +2033,6 @@ Bar % = average weight across all lines.">
       issues:  new Set(['issue', 'returned']),
     };
     let activeFilter = 'all';
-    // Tracks the active stock sub-tab name ('All', 'Allocated', 'Required', etc.).
-    // Set by syncAllocatedView (defined below) and read by applyFilter.
-    // Initialised to 'All' — syncAllocatedView corrects it on first run.
-    let currentStockTab = 'All';
     const chipEls  = [...bar.querySelectorAll('.mt-chip')];
     const countEls = Object.fromEntries(
       [...bar.querySelectorAll('.mt-chip-count')].map(el => [el.dataset.for, el])
