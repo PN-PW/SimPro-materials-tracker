@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name SimPro Materials Tracker
 // @namespace https://powernaturally.simprosuite.com/
-// @version 1.9.4
+// @version 1.9.5
 // @description Track delivery route, tracking number, ETA and status per material allocation on SimPro cost-centre pages. Multi-user with realtime sync, audit log, filter chips, CSV export, bulk ETA, CC-log CSV, and BI progress overlay — backed by Supabase.
 // @author PowerNaturally
 // @match https://powernaturally.simprosuite.com/staff/editCostCentre.php*
@@ -19,8 +19,15 @@
 // @run-at document-idle
 // ==/UserScript==
 
-/* global supabase, GM_addStyle, GM_getValue, GM_setValue, GM_deleteValue, GM_xmlhttpRequest */
+/* global supabase */
 
+// ─── v1.9.5 changelog ─────────────────────────────────────────────────────
+// FIX — Three linter warnings:
+// • Line 22: removed GM_* from /* global */ comment — they are already
+// declared as built-in globals by Tampermonkey via @grant; only `supabase`
+// (loaded via @require) needs the declaration.
+// • Lines 2190, 2559, 2616: added braces to braceless if bodies (curly rule).
+//
 // ─── v1.9.4 changelog ─────────────────────────────────────────────────────
 // STYLE — Removed all 571 remaining multi-space alignment patterns (object
 // literals, CSS strings, inline code). v1.9.3 only caught spaces before `=`;
@@ -2187,12 +2194,12 @@ Bar % = average weight across all lines.">
       const emailMap = {};
       try {
         const { data: profiles } = await sb.from('user_profiles').select('user_id, email');
-        if (profiles) profiles.forEach(p => {
+        if (profiles) { profiles.forEach(p => {
           if (p.email) {
             emailMap[p.user_id] = p.email;
             userEmailCache.set(p.user_id, p.email); // warm global cache
           }
-        });
+        }); }
       } catch (e) { warn('CSV email lookup failed', e); }
 
       // ── DOM name lookup (authoritative — beats stale DB values) ──────────
@@ -2555,8 +2562,9 @@ Bar % = average weight across all lines.">
           if (window.getComputedStyle(tr).display === 'none') continue;
           const isOdd = si % 2 === 1;
           for (const td of tr.children) {
-            if (td.tagName === 'TD' && !td.classList.contains('mt-cell') && !td.classList.contains('mt-check'))
+            if (td.tagName === 'TD' && !td.classList.contains('mt-cell') && !td.classList.contains('mt-check')) {
               td.style.setProperty('background-color', isOdd ? STRIPE_ODD : STRIPE_EVEN, 'important');
+            }
           }
           si++;
         }
@@ -2612,8 +2620,9 @@ Bar % = average weight across all lines.">
           const isOdd = si % 2 === 1;
           r.row.classList.add(isOdd ? 'mt-row-odd' : 'mt-row-even');
           for (const td of r.row.children) {
-            if (td.tagName === 'TD')
+            if (td.tagName === 'TD') {
               td.style.setProperty('background-color', isOdd ? STRIPE_ODD : STRIPE_EVEN, 'important');
+            }
           }
           si++;
           const rec = recordMap.get(`${r.material_id}|${r.location_id}|${r.occurrence_index}`);
