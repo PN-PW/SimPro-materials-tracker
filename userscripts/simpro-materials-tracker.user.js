@@ -1,361 +1,366 @@
 ﻿// ==UserScript==
-// @name         SimPro Materials Tracker
-// @namespace    https://powernaturally.simprosuite.com/
-// @version      1.9.3
-// @description  Track delivery route, tracking number, ETA and status per material allocation on SimPro cost-centre pages. Multi-user with realtime sync, audit log, filter chips, CSV export, bulk ETA, CC-log CSV, and BI progress overlay — backed by Supabase.
-// @author       PowerNaturally
-// @match        https://powernaturally.simprosuite.com/staff/editCostCentre.php*
-// @match        https://powernaturally.simprosuite.com/staff/editProject.php*
-// @match        https://reportbuilder.simprosuite.com/question/*
-// @updateURL    https://raw.githubusercontent.com/PN-PW/SimPro-materials-tracker/master/userscripts/simpro-materials-tracker.user.js
-// @downloadURL  https://raw.githubusercontent.com/PN-PW/SimPro-materials-tracker/master/userscripts/simpro-materials-tracker.user.js
-// @require      https://unpkg.com/@supabase/supabase-js@2.45.4/dist/umd/supabase.js
-// @grant        GM_addStyle
-// @grant        GM_getValue
-// @grant        GM_setValue
-// @grant        GM_deleteValue
-// @grant        GM_xmlhttpRequest
-// @connect      gspkrnqjzabcrufgitdk.supabase.co
-// @run-at       document-idle
+// @name SimPro Materials Tracker
+// @namespace https://powernaturally.simprosuite.com/
+// @version 1.9.4
+// @description Track delivery route, tracking number, ETA and status per material allocation on SimPro cost-centre pages. Multi-user with realtime sync, audit log, filter chips, CSV export, bulk ETA, CC-log CSV, and BI progress overlay — backed by Supabase.
+// @author PowerNaturally
+// @match https://powernaturally.simprosuite.com/staff/editCostCentre.php*
+// @match https://powernaturally.simprosuite.com/staff/editProject.php*
+// @match https://reportbuilder.simprosuite.com/question/*
+// @updateURL https://raw.githubusercontent.com/PN-PW/SimPro-materials-tracker/master/userscripts/simpro-materials-tracker.user.js
+// @downloadURL https://raw.githubusercontent.com/PN-PW/SimPro-materials-tracker/master/userscripts/simpro-materials-tracker.user.js
+// @require https://unpkg.com/@supabase/supabase-js@2.45.4/dist/umd/supabase.js
+// @grant GM_addStyle
+// @grant GM_getValue
+// @grant GM_setValue
+// @grant GM_deleteValue
+// @grant GM_xmlhttpRequest
+// @connect gspkrnqjzabcrufgitdk.supabase.co
+// @run-at document-idle
 // ==/UserScript==
 
 /* global supabase, GM_addStyle, GM_getValue, GM_setValue, GM_deleteValue, GM_xmlhttpRequest */
 
+// ─── v1.9.4 changelog ─────────────────────────────────────────────────────
+// STYLE — Removed all 571 remaining multi-space alignment patterns (object
+// literals, CSS strings, inline code). v1.9.3 only caught spaces before `=`;
+// this pass covers every other position. No functional change.
+//
 // ─── v1.9.3 changelog ─────────────────────────────────────────────────────
-//   STYLE — Removed 47 multi-space-before-= alignment patterns throughout the
-//   script.  Tampermonkey's linter (no-multi-spaces rule) flagged these as
-//   warnings on every install.  No functional change.
+// STYLE — Removed 47 multi-space-before-= alignment patterns throughout the
+// script. Tampermonkey's linter (no-multi-spaces rule) flagged these as
+// warnings on every install. No functional change.
 //
 // ─── v1.9.2 changelog ─────────────────────────────────────────────────────
-//   BUG FIX — "currentStockTab is not defined" + row checkboxes gone.
+// BUG FIX — "currentStockTab is not defined" + row checkboxes gone.
 //
-//   Root cause:
-//   currentStockTab was declared with `let` inside injectBulkBar() (IIFE-level
-//   function), but syncAllocatedView() is defined inside bootstrapCostCentreEdit()
-//   — a different scope chain.  In strict mode, the assignment
-//   `currentStockTab = ...` in syncAllocatedView threw ReferenceError because
-//   the variable was not visible through its scope chain.  The function aborted
-//   before table.classList.toggle('mt-allocated-active', ...) could run, so the
-//   CSS guard permanently hid all .mt-check cells → checkboxes disappeared.
+// Root cause:
+// currentStockTab was declared with `let` inside injectBulkBar() (IIFE-level
+// function), but syncAllocatedView() is defined inside bootstrapCostCentreEdit()
+// — a different scope chain. In strict mode, the assignment
+// `currentStockTab = ...` in syncAllocatedView threw ReferenceError because
+// the variable was not visible through its scope chain. The function aborted
+// before table.classList.toggle('mt-allocated-active', ...) could run, so the
+// CSS guard permanently hid all .mt-check cells → checkboxes disappeared.
 //
-//   Fix:
-//   Moved `let currentStockTab = 'All'` to the IIFE level (alongside
-//   currentUser / currentUserRole) where both injectBulkBar's applyFilter
-//   closure and syncAllocatedView can reach it through the scope chain.
-//   Removed the shadowing declaration from inside injectBulkBar.
+// Fix:
+// Moved `let currentStockTab = 'All'` to the IIFE level (alongside
+// currentUser / currentUserRole) where both injectBulkBar's applyFilter
+// closure and syncAllocatedView can reach it through the scope chain.
+// Removed the shadowing declaration from inside injectBulkBar.
 //
 // ─── v1.9.1 changelog ─────────────────────────────────────────────────────
-//   BUG FIX — Allocated tab showed ALL material rows, not just formally-assigned ones.
+// BUG FIX — Allocated tab showed ALL material rows, not just formally-assigned ones.
 //
-//   Root cause:
-//   applyFilter() used `display:table-row !important` on every injected row
-//   whenever the Allocated tab was active — regardless of whether SimPro had
-//   actually allocated that row (AllocatedStock CSS class).  For a fresh job
-//   (nothing drawn from stock yet) SimPro's Allocated tab is correctly empty,
-//   but our script was overriding SimPro's `.hide` filter and force-showing all
-//   10 rows there, with Assigned = 0 [0] for every line.  This also meant two
-//   users on the same job could appear to see different data depending on which
-//   tab they had open.
+// Root cause:
+// applyFilter() used `display:table-row !important` on every injected row
+// whenever the Allocated tab was active — regardless of whether SimPro had
+// actually allocated that row (AllocatedStock CSS class). For a fresh job
+// (nothing drawn from stock yet) SimPro's Allocated tab is correctly empty,
+// but our script was overriding SimPro's `.hide` filter and force-showing all
+// 10 rows there, with Assigned = 0 [0] for every line. This also meant two
+// users on the same job could appear to see different data depending on which
+// tab they had open.
 //
-//   Fix A — Allocated tab row visibility (applyFilter):
-//   On the Allocated tab, only rows that carry SimPro's `AllocatedStock` CSS
-//   class are force-shown (these are materials SimPro has formally drawn from
-//   stock for the job).  All other rows get `removeProperty('display')` so
-//   SimPro's `.hide` class hides them correctly.  The Allocated tab now shows
-//   exactly what SimPro says is allocated — nothing more.
+// Fix A — Allocated tab row visibility (applyFilter):
+// On the Allocated tab, only rows that carry SimPro's `AllocatedStock` CSS
+// class are force-shown (these are materials SimPro has formally drawn from
+// stock for the job). All other rows get `removeProperty('display')` so
+// SimPro's `.hide` class hides them correctly. The Allocated tab now shows
+// exactly what SimPro says is allocated — nothing more.
 //
-//   Fix B — MT columns on All tab (syncAllocatedView):
-//   Because the Allocated tab is empty for fresh jobs, users need another tab
-//   where MT controls are accessible.  MT columns + bulk bar are now shown on
-//   both the Allocated tab AND the All tab (`isMtActive` flag).  Required /
-//   In Stock / Order tabs remain uncluttered (MT columns hidden).
+// Fix B — MT columns on All tab (syncAllocatedView):
+// Because the Allocated tab is empty for fresh jobs, users need another tab
+// where MT controls are accessible. MT columns + bulk bar are now shown on
+// both the Allocated tab AND the All tab (`isMtActive` flag). Required /
+// In Stock / Order tabs remain uncluttered (MT columns hidden).
 //
-//   Fix C — Unified stripe logic (syncAllocatedView):
-//   The previous code had separate stripe paths for Allocated vs. other tabs.
-//   All tab switches now use the same clear-then-recount-visible pattern with
-//   setTimeout(0), which correctly handles any tab (including Allocated when
-//   only a subset of rows are visible).
+// Fix C — Unified stripe logic (syncAllocatedView):
+// The previous code had separate stripe paths for Allocated vs. other tabs.
+// All tab switches now use the same clear-then-recount-visible pattern with
+// setTimeout(0), which correctly handles any tab (including Allocated when
+// only a subset of rows are visible).
 //
 // ─── v1.9.0 changelog ─────────────────────────────────────────────────────
-//   BUG FIX — MT cells locked on ALL rows for jobs with no stock assigned yet.
+// BUG FIX — MT cells locked on ALL rows for jobs with no stock assigned yet.
 //
-//   Root cause (browser-verified on job #5770):
-//   The mt-unassigned check used only the assignment spinner value
-//   (stockInput.value = 0) to decide whether to gray-out MT cells.  For a
-//   fresh job where no stock has been formally drawn yet, EVERY row has
-//   stockInput.value = 0 — so every row was locked, making the tracker
-//   completely unusable until someone ran the SimPro "Assign from Stock" step.
+// Root cause (browser-verified on job #5770):
+// The mt-unassigned check used only the assignment spinner value
+// (stockInput.value = 0) to decide whether to gray-out MT cells. For a
+// fresh job where no stock has been formally drawn yet, EVERY row has
+// stockInput.value = 0 — so every row was locked, making the tracker
+// completely unusable until someone ran the SimPro "Assign from Stock" step.
 //
-//   Browser inspection confirmed:
-//   • 10 injected rows, all with In Stock > 0 (e.g. "2 [0]" at cells[9])
-//   • 0 rows with stockInput.value > 0 (nothing formally assigned)
-//   • 10/10 rows wrongly marked mt-unassigned → all MT cells grayed/disabled
-//   • No row carried an "AllocatedStock" CSS class — SimPro's Allocated tab
-//     is semantically empty for this job; rows only had AllStock + RequiredStock
+// Browser inspection confirmed:
+// • 10 injected rows, all with In Stock > 0 (e.g. "2 [0]" at cells[9])
+// • 0 rows with stockInput.value > 0 (nothing formally assigned)
+// • 10/10 rows wrongly marked mt-unassigned → all MT cells grayed/disabled
+// • No row carried an "AllocatedStock" CSS class — SimPro's Allocated tab
+// is semantically empty for this job; rows only had AllStock + RequiredStock
 //
-//   Fix: parseAllocationRows now reads cells[9] ("In Stock" column) to extract
-//   in_stock_qty for main rows.  injectRowCells uses the dual condition:
-//     unassigned = !assigned_qty && !in_stock_qty
-//   A row with stock available at its location (In Stock > 0) is NEVER locked,
-//   even if nothing has been formally drawn yet.  Only rows with genuinely
-//   nothing to track (In Stock = 0 AND Assigned = 0) are grayed out.
-//   recheckAssignedState (v1.8.9 timing fix) mirrors the same condition.
+// Fix: parseAllocationRows now reads cells[9] ("In Stock" column) to extract
+// in_stock_qty for main rows. injectRowCells uses the dual condition:
+// unassigned = !assigned_qty && !in_stock_qty
+// A row with stock available at its location (In Stock > 0) is NEVER locked,
+// even if nothing has been formally drawn yet. Only rows with genuinely
+// nothing to track (In Stock = 0 AND Assigned = 0) are grayed out.
+// recheckAssignedState (v1.8.9 timing fix) mirrors the same condition.
 //
 // ─── v1.8.9 changelog ─────────────────────────────────────────────────────
-//   BUG FIX — multi-user: one user sees MT cells locked (grayed-out), the
-//   other sees them working correctly on the same job at the same time.
+// BUG FIX — multi-user: one user sees MT cells locked (grayed-out), the
+// other sees them working correctly on the same job at the same time.
 //
-//   Root cause: parseAllocationRows reads stockInput.value SYNCHRONOUSLY at
-//   script start (document-idle).  SimPro sometimes sets stock input values
-//   via its own JavaScript AFTER document-idle fires, creating a race.  If
-//   our script wins the race it reads 0, marks every row mt-unassigned, and
-//   injects grayed-out, non-interactive MT cells.  The other user's browser
-//   loses the race (SimPro's JS ran first) and gets the real values.
+// Root cause: parseAllocationRows reads stockInput.value SYNCHRONOUSLY at
+// script start (document-idle). SimPro sometimes sets stock input values
+// via its own JavaScript AFTER document-idle fires, creating a race. If
+// our script wins the race it reads 0, marks every row mt-unassigned, and
+// injects grayed-out, non-interactive MT cells. The other user's browser
+// loses the race (SimPro's JS ran first) and gets the real values.
 //
-//   Fix 1 — Post-injection re-check: after all rows are injected, re-read
-//   each stockInput.value at 300 ms and 1500 ms.  If a value has changed
-//   from 0 → non-zero (SimPro populated it after our initial parse), the
-//   mt-unassigned class is lifted and the MT controls are re-enabled.
+// Fix 1 — Post-injection re-check: after all rows are injected, re-read
+// each stockInput.value at 300 ms and 1500 ms. If a value has changed
+// from 0 → non-zero (SimPro populated it after our initial parse), the
+// mt-unassigned class is lifted and the MT controls are re-enabled.
 //
-//   Fix 2 — ensureRecords guard: the same timing artefact caused ensureRecords
-//   to write assigned_qty=null back to Supabase when stored.assigned_qty was
-//   a real non-zero value, silently corrupting the BI progress denominator.
-//   ensureRecords now only propagates an assigned_qty change when the DOM
-//   value is non-null; a null/zero DOM value never overwrites a real stored
-//   value.
+// Fix 2 — ensureRecords guard: the same timing artefact caused ensureRecords
+// to write assigned_qty=null back to Supabase when stored.assigned_qty was
+// a real non-zero value, silently corrupting the BI progress denominator.
+// ensureRecords now only propagates an assigned_qty change when the DOM
+// value is non-null; a null/zero DOM value never overwrites a real stored
+// value.
 //
 // ─── v1.8.7 changelog ─────────────────────────────────────────────────────
-//   BUG FIX — v1.8.6 chess-board on Allocated tab + no improvement elsewhere:
-//   Two separate bugs:
-//   1. CSS specificity: the stripe rule had `tbody tr` in the selector, giving
-//      it extra element selectors and pushing its specificity above the tier-
-//      colour rules — status cell tier colours were lost on Allocated tab.
-//      Fix: remove `tbody tr` from selector → (0,1,2,1), same as tier rules.
-//      Equal !important specificity → last-declared wins → tier wins. ✓
-//   2. Re-apply counter: syncAllocatedView re-applied with si=1,2,3… but only
-//      iterated [data-mt-injected="1"] rows. Non-injected rows (no tracking
-//      record) still consumed stripe positions during the initial injection, so
-//      the counter produced wrong odd/even assignments for injected rows → chess
-//      board. Fix: read mt-row-odd/even CLASS set during injection — no counter.
-//   3. Clear scope: clear only targeted injected rows; non-injected rows kept
-//      their inline style and still showed wrong colours on non-Allocated tabs.
-//      Fix: clear uses tr:is(.mt-row-odd,.mt-row-even) to cover all striped rows.
+// BUG FIX — v1.8.6 chess-board on Allocated tab + no improvement elsewhere:
+// Two separate bugs:
+// 1. CSS specificity: the stripe rule had `tbody tr` in the selector, giving
+// it extra element selectors and pushing its specificity above the tier-
+// colour rules — status cell tier colours were lost on Allocated tab.
+// Fix: remove `tbody tr` from selector → (0,1,2,1), same as tier rules.
+// Equal !important specificity → last-declared wins → tier wins. ✓
+// 2. Re-apply counter: syncAllocatedView re-applied with si=1,2,3… but only
+// iterated [data-mt-injected="1"] rows. Non-injected rows (no tracking
+// record) still consumed stripe positions during the initial injection, so
+// the counter produced wrong odd/even assignments for injected rows → chess
+// board. Fix: read mt-row-odd/even CLASS set during injection — no counter.
+// 3. Clear scope: clear only targeted injected rows; non-injected rows kept
+// their inline style and still showed wrong colours on non-Allocated tabs.
+// Fix: clear uses tr:is(.mt-row-odd,.mt-row-even) to cover all striped rows.
 //
 // ─── v1.8.6 changelog ─────────────────────────────────────────────────────
-//   BUG FIX — v1.8.5 broke Allocated tab (status tier colours lost, wrong
-//   stripe colours) while not improving other tabs:
-//   The CSS rule was scoped to .mt-allocated-active but still targeted all
-//   `> td`, giving it higher specificity than the status-tier CSS rules — so
-//   stripe colour stomped the tier colour on the status column. The re-apply
-//   loop also touched MT-injected TDs (.mt-cell, .mt-check) which have their
-//   own colour rules and should never receive an inline stripe override.
-//   Fix: both the CSS selector and the JS re-apply / clear loops now exclude
-//   .mt-cell and .mt-check elements. Native SimPro TDs get the inline stripe
-//   on the Allocated tab (and lose it on other tabs); MT-injected cells keep
-//   their CSS-based colours untouched on all tabs.
+// BUG FIX — v1.8.5 broke Allocated tab (status tier colours lost, wrong
+// stripe colours) while not improving other tabs:
+// The CSS rule was scoped to .mt-allocated-active but still targeted all
+// `> td`, giving it higher specificity than the status-tier CSS rules — so
+// stripe colour stomped the tier colour on the status column. The re-apply
+// loop also touched MT-injected TDs (.mt-cell, .mt-check) which have their
+// own colour rules and should never receive an inline stripe override.
+// Fix: both the CSS selector and the JS re-apply / clear loops now exclude
+// .mt-cell and .mt-check elements. Native SimPro TDs get the inline stripe
+// on the Allocated tab (and lose it on other tabs); MT-injected cells keep
+// their CSS-based colours untouched on all tabs.
 //
 // ─── v1.8.5 changelog ─────────────────────────────────────────────────────
-//   BUG FIX — inconsistent row striping on Required / All / In Stock / Order:
-//   Our script applies inline background-color !important to every TD during
-//   injection, based on each row's DOM position across ALL rows. On the
-//   Allocated tab this is correct. On other tabs SimPro hides rows (Needed=0
-//   etc.) but hidden rows still consume stripe positions, so visible rows can
-//   end up all the same colour.
-//   Fix: syncAllocatedView now clears inline background-color from all MT TDs
-//   when switching to a non-Allocated tab, and re-applies them on return.
-//   The CSS striping rule is scoped to #materialsTable.mt-allocated-active so
-//   SimPro's own alternating colours take effect on all other tabs.
-//   reinjectAfterRefresh also calls syncAllocatedView() (was filterApi.reapply)
-//   so a SimPro partial re-render on a non-Allocated tab doesn't restore the
-//   stale inline colours.
+// BUG FIX — inconsistent row striping on Required / All / In Stock / Order:
+// Our script applies inline background-color !important to every TD during
+// injection, based on each row's DOM position across ALL rows. On the
+// Allocated tab this is correct. On other tabs SimPro hides rows (Needed=0
+// etc.) but hidden rows still consume stripe positions, so visible rows can
+// end up all the same colour.
+// Fix: syncAllocatedView now clears inline background-color from all MT TDs
+// when switching to a non-Allocated tab, and re-applies them on return.
+// The CSS striping rule is scoped to #materialsTable.mt-allocated-active so
+// SimPro's own alternating colours take effect on all other tabs.
+// reinjectAfterRefresh also calls syncAllocatedView() (was filterApi.reapply)
+// so a SimPro partial re-render on a non-Allocated tab doesn't restore the
+// stale inline colours.
 //
 // ─── v1.8.4 changelog ─────────────────────────────────────────────────────
-//   BUG FIX — Required/All/In Stock/Order tabs showed rows that SimPro
-//   had hidden (e.g. Needed = 0 on the Required tab):
-//   applyFilter() used `display:table-row !important` to fight SimPro's
-//   autosave `.hide` re-additions on the Allocated tab. That same override
-//   also fired on non-Allocated tabs, stomping SimPro's legitimate row-hiding.
-//   Fix: applyFilter now checks `mt-allocated-active` on the table and only
-//   forces display on the Allocated tab; on other tabs it removes the override
-//   so SimPro's native tab filtering works normally.
-//   syncAllocatedView now calls filterApi.reapply() immediately on tab switch
-//   so the cleanup happens synchronously rather than waiting for the next
-//   MutationObserver event.
+// BUG FIX — Required/All/In Stock/Order tabs showed rows that SimPro
+// had hidden (e.g. Needed = 0 on the Required tab):
+// applyFilter() used `display:table-row !important` to fight SimPro's
+// autosave `.hide` re-additions on the Allocated tab. That same override
+// also fired on non-Allocated tabs, stomping SimPro's legitimate row-hiding.
+// Fix: applyFilter now checks `mt-allocated-active` on the table and only
+// forces display on the Allocated tab; on other tabs it removes the override
+// so SimPro's native tab filtering works normally.
+// syncAllocatedView now calls filterApi.reapply() immediately on tab switch
+// so the cleanup happens synchronously rather than waiting for the next
+// MutationObserver event.
 //
 // ─── v1.8.3 changelog ─────────────────────────────────────────────────────
-//   • Added @updateURL and @downloadURL headers pointing to the public GitHub
-//     raw URL so Tampermonkey auto-updates when the repo is public.
-//   • Fixed checkbox header (`th.mt-check`) not being hidden on non-Allocated
-//     stock sub-tabs (Required, All, In Stock, Order). The CSS guard rule now
-//     includes `th.mt-check` alongside `th.mt-col-head`.
+// • Added @updateURL and @downloadURL headers pointing to the public GitHub
+// raw URL so Tampermonkey auto-updates when the repo is public.
+// • Fixed checkbox header (`th.mt-check`) not being hidden on non-Allocated
+// stock sub-tabs (Required, All, In Stock, Order). The CSS guard rule now
+// includes `th.mt-check` alongside `th.mt-col-head`.
 //
 // ─── v1.8.0 changelog ─────────────────────────────────────────────────────
-//   • Route: SU_WH_ST (Supplier → Warehouse → Site) renamed to SU_WH
-//     (Supplier → Warehouse). The site-delivery leg is now tracked separately
-//     under the WH_ST route. Requires SQL migration:
-//       ALTER TYPE delivery_route ADD VALUE IF NOT EXISTS 'SU_WH' AFTER 'SU_WH_ST';
-//       UPDATE tracking_records SET route = 'SU_WH' WHERE route = 'SU_WH_ST';
-//   • New status: "Delivered to WH" (value: delivered_wh, tier 3, weight 70%).
-//     Sits between Shipped (60%) and Delivered to site (80%). Appears in the
-//     Transit filter chip. Requires SQL migration:
-//       ALTER TYPE delivery_status ADD VALUE IF NOT EXISTS 'delivered_wh' AFTER 'shipped';
-//   • Status rename: "Delivered" → "Delivered to site" (DB value unchanged:
-//     'delivered'). No data migration required.
-//   • Progress weight scale updated:
-//       Shipped / Collected  60% → Delivered to WH  70% → Delivered to site  80%
+// • Route: SU_WH_ST (Supplier → Warehouse → Site) renamed to SU_WH
+// (Supplier → Warehouse). The site-delivery leg is now tracked separately
+// under the WH_ST route. Requires SQL migration:
+// ALTER TYPE delivery_route ADD VALUE IF NOT EXISTS 'SU_WH' AFTER 'SU_WH_ST';
+// UPDATE tracking_records SET route = 'SU_WH' WHERE route = 'SU_WH_ST';
+// • New status: "Delivered to WH" (value: delivered_wh, tier 3, weight 70%).
+// Sits between Shipped (60%) and Delivered to site (80%). Appears in the
+// Transit filter chip. Requires SQL migration:
+// ALTER TYPE delivery_status ADD VALUE IF NOT EXISTS 'delivered_wh' AFTER 'shipped';
+// • Status rename: "Delivered" → "Delivered to site" (DB value unchanged:
+// 'delivered'). No data migration required.
+// • Progress weight scale updated:
+// Shipped / Collected 60% → Delivered to WH 70% → Delivered to site 80%
 //
 // ─── v1.7.9 changelog ─────────────────────────────────────────────────────
-//   BUG FIX — BI progress % diverges from CC page progress bar:
-//   ensureRecords() only ever inserted NEW rows into Supabase; it never updated
-//   assigned_qty / required_qty for rows that already existed.  If SimPro later
-//   changed an allocation (more stock added, or materials unassigned), Supabase
-//   kept the old qty values.  The CC page uses SimPro's live DOM to decide which
-//   rows count as "assigned" (the mt-unassigned class), so it was always correct.
-//   The BI page used the stale Supabase assigned_qty, producing a different
-//   denominator and a wrong percentage.
-//   Fix: ensureRecords() now detects rows where assigned_qty or required_qty
-//   differs between SimPro's current DOM and the stored DB value, and fires a
-//   batch of UPDATE calls to bring Supabase in sync.  This runs on every CC page
-//   visit and is effectively a no-op (0 updates) when nothing has changed.
+// BUG FIX — BI progress % diverges from CC page progress bar:
+// ensureRecords() only ever inserted NEW rows into Supabase; it never updated
+// assigned_qty / required_qty for rows that already existed. If SimPro later
+// changed an allocation (more stock added, or materials unassigned), Supabase
+// kept the old qty values. The CC page uses SimPro's live DOM to decide which
+// rows count as "assigned" (the mt-unassigned class), so it was always correct.
+// The BI page used the stale Supabase assigned_qty, producing a different
+// denominator and a wrong percentage.
+// Fix: ensureRecords() now detects rows where assigned_qty or required_qty
+// differs between SimPro's current DOM and the stored DB value, and fires a
+// batch of UPDATE calls to bring Supabase in sync. This runs on every CC page
+// visit and is effectively a no-op (0 updates) when nothing has changed.
 //
 // ─── v1.7.8 changelog ─────────────────────────────────────────────────────
-//   • BI header tracking: replaced one-shot resize listener with a
-//     requestAnimationFrame IIFE (trackPosition) that polls getBoundingClientRect
-//     every frame, keeping the header overlay pixel-perfect when Metabase panels
-//     toggle or the viewport shifts — not just on window resize.
-//   • BI filter visual: non-matching rows now get a full-width rgba overlay strip
-//     (rowDimPool) spanning the entire data grid, instead of only dimming the 90 px
-//     progress cell — makes filtered-out rows clearly visible at a glance.
-//   • BI filter count badge: clicking a filter option now shows the count of
-//     matching rows across ALL 3,521 rows in the header, e.g. "Prog: Has data (6)".
-//   • Route column: labels shortened to WH→ST / SUP→ST / SUP→WH→ST / VAN→ST;
-//     column width increased 95px → 115px so the longest label fits.
-//   • Route tooltip: hovering the select or any option shows the full description
-//     (e.g. "Supplier → Warehouse → Site") via the title attribute.
+// • BI header tracking: replaced one-shot resize listener with a
+// requestAnimationFrame IIFE (trackPosition) that polls getBoundingClientRect
+// every frame, keeping the header overlay pixel-perfect when Metabase panels
+// toggle or the viewport shifts — not just on window resize.
+// • BI filter visual: non-matching rows now get a full-width rgba overlay strip
+// (rowDimPool) spanning the entire data grid, instead of only dimming the 90 px
+// progress cell — makes filtered-out rows clearly visible at a glance.
+// • BI filter count badge: clicking a filter option now shows the count of
+// matching rows across ALL 3,521 rows in the header, e.g. "Prog: Has data (6)".
+// • Route column: labels shortened to WH→ST / SUP→ST / SUP→WH→ST / VAN→ST;
+// column width increased 95px → 115px so the longest label fits.
+// • Route tooltip: hovering the select or any option shows the full description
+// (e.g. "Supplier → Warehouse → Site") via the title attribute.
 //
 // ─── v1.7.5 changelog ─────────────────────────────────────────────────────
-//   • BI page: increase results-grid waitFor timeout from 20 s to 90 s.
-//     The Metabase question executes a live DB query returning 3,521 rows;
-//     this routinely takes > 20 s before React renders any DOM content.
-//     A heartbeat log every 10 s confirms the script is still waiting, and
-//     the failure message now includes body HTML length for diagnosis.
+// • BI page: increase results-grid waitFor timeout from 20 s to 90 s.
+// The Metabase question executes a live DB query returning 3,521 rows;
+// this routinely takes > 20 s before React renders any DOM content.
+// A heartbeat log every 10 s confirms the script is still waiting, and
+// the failure message now includes body HTML length for diagnosis.
 //
 // ─── v1.7.4 changelog ─────────────────────────────────────────────────────
-//   • BI page: fix CSP-blocked auth.  initClient() creates a Supabase JS client
-//     with autoRefreshToken:true, which immediately fires _recoverAndRefresh()
-//     using fetch() — blocked by Metabase's connect-src CSP.  bootstrapBIPage
-//     no longer calls initClient() or sb.auth.getSession().  Instead it reads
-//     the raw session JSON directly from GM_getValue('mt-auth') (no network)
-//     and refreshes the token via GM_xmlhttpRequest if it is expiring (<60 s).
-//     All subsequent calls were already using GM_xmlhttpRequest.  This removes
-//     the flood of "Refused to connect" CSP errors and allows getSession to
-//     succeed reliably.
+// • BI page: fix CSP-blocked auth. initClient() creates a Supabase JS client
+// with autoRefreshToken:true, which immediately fires _recoverAndRefresh()
+// using fetch() — blocked by Metabase's connect-src CSP. bootstrapBIPage
+// no longer calls initClient() or sb.auth.getSession(). Instead it reads
+// the raw session JSON directly from GM_getValue('mt-auth') (no network)
+// and refreshes the token via GM_xmlhttpRequest if it is expiring (<60 s).
+// All subsequent calls were already using GM_xmlhttpRequest. This removes
+// the flood of "Refused to connect" CSP errors and allows getSession to
+// succeed reliably.
 //
 // ─── v1.7.3 changelog ─────────────────────────────────────────────────────
-//   • BI page: Metabase's Content Security Policy blocks all direct fetch()
-//     calls to Supabase (connect-src does not whitelist gspkrnqjzabcrufgitdk.
-//     supabase.co). Fixed by routing the Supabase data query through
-//     GM_xmlhttpRequest, which runs in Tampermonkey's extension context and is
-//     fully CSP-exempt. Added @grant GM_xmlhttpRequest and @connect.
-//   • BI page: skip loadCurrentUserRole() (also CSP-blocked, not needed on BI
-//     page) and read the JWT directly from the GM-stored session instead of
-//     going through ensureAuth's interactive flow.
+// • BI page: Metabase's Content Security Policy blocks all direct fetch()
+// calls to Supabase (connect-src does not whitelist gspkrnqjzabcrufgitdk.
+// supabase.co). Fixed by routing the Supabase data query through
+// GM_xmlhttpRequest, which runs in Tampermonkey's extension context and is
+// fully CSP-exempt. Added @grant GM_xmlhttpRequest and @connect.
+// • BI page: skip loadCurrentUserRole() (also CSP-blocked, not needed on BI
+// page) and read the JWT directly from the GM-stored session instead of
+// going through ensureAuth's interactive flow.
 //
 // ─── v1.7.2 changelog ─────────────────────────────────────────────────────
-//   • BI page: rewrote table detection with an adapter pattern that handles
-//     BOTH classic <table> markup and Metabase's div-based ARIA grid
-//     (role="columnheader" / role="gridcell"). Previous version only searched
-//     for <table> elements — Metabase's newer virtual-scroll renderer uses divs
-//     so the column was never injected. Detailed console diagnostics are logged
-//     under [MT] so failures are easy to report.
+// • BI page: rewrote table detection with an adapter pattern that handles
+// BOTH classic <table> markup and Metabase's div-based ARIA grid
+// (role="columnheader" / role="gridcell"). Previous version only searched
+// for <table> elements — Metabase's newer virtual-scroll renderer uses divs
+// so the column was never injected. Detailed console diagnostics are logged
+// under [MT] so failures are easy to report.
 //
 // ─── v1.7.1 changelog ─────────────────────────────────────────────────────
-//   • Auth shared across domains: Supabase session now stored in Tampermonkey
-//     GM storage (not window.localStorage) so sign-in on a SimPro cost-centre
-//     page is automatically available on the BI page (different hostname).
-//   • Chip counts no longer inflate with qty=0 (unassigned) rows — those rows
-//     have no meaningful tracking state and were confusingly appearing in "All"
-//     and "Pending" badges.
-//   • CC Log CSV now includes a UTF-8 BOM so Excel opens it without garbling
-//     em dashes (—), arrows (→) and other non-ASCII characters.
-//   • Info button now calls e.preventDefault() in addition to stopPropagation()
-//     to prevent SimPro's form handlers from wiping the page when the modal is
-//     opened via the ⓘ button.
-//   • Bulk bar re-injection: if SimPro replaces the entire table container
-//     (not just the tbody), the bulk bar was permanently lost. reinjectAfterRefresh
-//     now detects a disconnected bar and re-injects it into the new container.
-//   • BI page: allow interactive sign-in prompt if session is not yet available
-//     on that domain.
+// • Auth shared across domains: Supabase session now stored in Tampermonkey
+// GM storage (not window.localStorage) so sign-in on a SimPro cost-centre
+// page is automatically available on the BI page (different hostname).
+// • Chip counts no longer inflate with qty=0 (unassigned) rows — those rows
+// have no meaningful tracking state and were confusingly appearing in "All"
+// and "Pending" badges.
+// • CC Log CSV now includes a UTF-8 BOM so Excel opens it without garbling
+// em dashes (—), arrows (→) and other non-ASCII characters.
+// • Info button now calls e.preventDefault() in addition to stopPropagation()
+// to prevent SimPro's form handlers from wiping the page when the modal is
+// opened via the ⓘ button.
+// • Bulk bar re-injection: if SimPro replaces the entire table container
+// (not just the tbody), the bulk bar was permanently lost. reinjectAfterRefresh
+// now detects a disconnected bar and re-injects it into the new container.
+// • BI page: allow interactive sign-in prompt if session is not yet available
+// on that domain.
 //
 // ─── v1.7.0 changelog ─────────────────────────────────────────────────────
-//   • Admin delete now RE-SEEDS the row: after erasing the old tracking record
-//     a fresh "Not actioned" record is immediately inserted so the row stays
-//     fully interactive — no more broken/missing MT columns after a delete.
-//   • CC Log CSV download: "Download CSV" button added to the CC Log modal.
-//     Flat layout — DateTime | User | Material | Location | Field | Old | New.
-//   • BI page overlay: adds @match for reportbuilder.simprosuite.com/question/*
-//     and injects a live "Progress %" column into the Metabase results table,
-//     computing weighted progress from Supabase tracking_records per CC.
+// • Admin delete now RE-SEEDS the row: after erasing the old tracking record
+// a fresh "Not actioned" record is immediately inserted so the row stays
+// fully interactive — no more broken/missing MT columns after a delete.
+// • CC Log CSV download: "Download CSV" button added to the CC Log modal.
+// Flat layout — DateTime | User | Material | Location | Field | Old | New.
+// • BI page overlay: adds @match for reportbuilder.simprosuite.com/question/*
+// and injects a live "Progress %" column into the Metabase results table,
+// computing weighted progress from Supabase tracking_records per CC.
 //
 // ─── v1.6.3 changelog ─────────────────────────────────────────────────────
-//   BUG FIX — sub-row column misalignment (personal stock / non-warehouse):
-//   Sub-rows (PN_Darren H. Stock etc.) use colspan=8 on their second TD to
-//   skip the Name→Value columns, giving them only ~8 native TDs vs ~15 for
-//   main rows. INSERT_AFTER_IDX=11 is out of range so cells were appended to
-//   the end, landing on wrong visual columns (Route in Status column, etc.).
-//   • injectRowCells now detects sub-rows (cells.length < 10 after checkbox)
-//     and inserts before cells[5] (the stock-location link) instead of
-//     cells[12], placing MT columns at effective col 12-16 for both row types
-//     and correctly pushing the stock link/spinner to the Move-Diff/Assigned
-//     column positions.
+// BUG FIX — sub-row column misalignment (personal stock / non-warehouse):
+// Sub-rows (PN_Darren H. Stock etc.) use colspan=8 on their second TD to
+// skip the Name→Value columns, giving them only ~8 native TDs vs ~15 for
+// main rows. INSERT_AFTER_IDX=11 is out of range so cells were appended to
+// the end, landing on wrong visual columns (Route in Status column, etc.).
+// • injectRowCells now detects sub-rows (cells.length < 10 after checkbox)
+// and inserts before cells[5] (the stock-location link) instead of
+// cells[12], placing MT columns at effective col 12-16 for both row types
+// and correctly pushing the stock link/spinner to the Move-Diff/Assigned
+// column positions.
 //
 // ─── v1.6.2 changelog ─────────────────────────────────────────────────────
-//   ROOT CAUSE FIX — rows disappear after every save / ETA pick:
-//   SimPro's autosave sets `display:table-row` (inline, no !important) on
-//   the visible tab rows. Our old `removeProperty('display')` stripped THAT
-//   inline style, letting the `.hide { display:none }` stylesheet rule win.
-//   • applyFilter now uses `display:table-row !important` for shown rows,
-//     overriding both the `hide` CSS class AND SimPro's own non-important
-//     inline style — rows we decide to show are ALWAYS visible.
-//   • MutationObserver extended to watch class-attribute changes on <tr>
-//     elements so a `hide`-class toggle also triggers a filter re-apply.
-//   • reinjectAfterRefresh always calls filterApi.reapply() after any DOM
-//     mutation, not just after a full re-injection.
-//   • 1.5 s fallback poll: if SimPro replaces the <tbody> element itself
-//     (the observer loses its reference), the poll detects the lost injection
-//     within 1.5 s and re-injects without needing a page reload.
+// ROOT CAUSE FIX — rows disappear after every save / ETA pick:
+// SimPro's autosave sets `display:table-row` (inline, no !important) on
+// the visible tab rows. Our old `removeProperty('display')` stripped THAT
+// inline style, letting the `.hide { display:none }` stylesheet rule win.
+// • applyFilter now uses `display:table-row !important` for shown rows,
+// overriding both the `hide` CSS class AND SimPro's own non-important
+// inline style — rows we decide to show are ALWAYS visible.
+// • MutationObserver extended to watch class-attribute changes on <tr>
+// elements so a `hide`-class toggle also triggers a filter re-apply.
+// • reinjectAfterRefresh always calls filterApi.reapply() after any DOM
+// mutation, not just after a full re-injection.
+// • 1.5 s fallback poll: if SimPro replaces the <tbody> element itself
+// (the observer loses its reference), the poll detects the lost injection
+// within 1.5 s and re-injects without needing a page reload.
 //
 // ─── v1.6.1 changelog ─────────────────────────────────────────────────────
-//   • MutationObserver resilience: when SimPro's timer-based autosave AJAX-
-//     refreshes the materials tbody (wiping our injected cells), the observer
-//     detects the pattern and re-injects all tracker controls automatically —
-//     no page reload required.
+// • MutationObserver resilience: when SimPro's timer-based autosave AJAX-
+// refreshes the materials tbody (wiping our injected cells), the observer
+// detects the pattern and re-injects all tracker controls automatically —
+// no page reload required.
 //
 // ─── v1.6.0 changelog ─────────────────────────────────────────────────────
-//   • Bulk ETA on the bulk bar — pick a date + Apply, or tick "Clear ETA" to
-//     null out the ETA on every selected row.
-//   • CSV export only includes rows currently rendered in the SimPro table
-//     (orphan tracking_records — for materials unassigned in SimPro after
-//     they were first seeded — used to surface as empty-material lines).
-//     "Material Code" column dropped from CSV (the script never populated it).
-//   • Filter-chip counts ("All / Pending / In transit / …") now count only
-//     ON-PAGE records — orphans don't inflate the badges any more.
-//   • Filter `display: none` now uses `setProperty(…, 'important')` so SimPro
-//     stylesheet rules can't override it — fixes "filtering does not filter".
-//   • Per-row Route / Status / ETA change events have `stopPropagation()` so
-//     SimPro's delegated form handlers never see them — fixes "all materials
-//     disappear when I pick a date in the ETA column" (SimPro was treating
-//     the bubbled change as one of its native date fields and partial-rendering
-//     the materials table, which wiped our injected cells).
-//   • applyFilter now treats a missing record as "show" rather than "hide" —
-//     defensive guard against transient cache races during realtime echoes.
+// • Bulk ETA on the bulk bar — pick a date + Apply, or tick "Clear ETA" to
+// null out the ETA on every selected row.
+// • CSV export only includes rows currently rendered in the SimPro table
+// (orphan tracking_records — for materials unassigned in SimPro after
+// they were first seeded — used to surface as empty-material lines).
+// "Material Code" column dropped from CSV (the script never populated it).
+// • Filter-chip counts ("All / Pending / In transit / …") now count only
+// ON-PAGE records — orphans don't inflate the badges any more.
+// • Filter `display: none` now uses `setProperty(…, 'important')` so SimPro
+// stylesheet rules can't override it — fixes "filtering does not filter".
+// • Per-row Route / Status / ETA change events have `stopPropagation()` so
+// SimPro's delegated form handlers never see them — fixes "all materials
+// disappear when I pick a date in the ETA column" (SimPro was treating
+// the bubbled change as one of its native date fields and partial-rendering
+// the materials table, which wiped our injected cells).
+// • applyFilter now treats a missing record as "show" rather than "hide" —
+// defensive guard against transient cache races during realtime echoes.
 // ──────────────────────────────────────────────────────────────────────────
 
 (function () {
   'use strict';
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  0. LOAD GUARD — fail loudly if @require didn't pull Supabase
+  // 0. LOAD GUARD — fail loudly if @require didn't pull Supabase
   // ═══════════════════════════════════════════════════════════════════════════
   if (typeof supabase === 'undefined' || !supabase?.createClient) {
     console.error('[MT] Supabase library failed to load via @require. Tampermonkey → Materials Tracker → Externals → update the supabase.js resource, then reload.');
@@ -367,7 +372,7 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  1. CONFIG
+  // 1. CONFIG
   // ═══════════════════════════════════════════════════════════════════════════
   const SUPABASE_URL = 'https://gspkrnqjzabcrufgitdk.supabase.co';
   const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdzcGtybnFqemFiY3J1ZmdpdGRrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY0NDM3NzgsImV4cCI6MjA5MjAxOTc3OH0.dhVgfAeLs9ffvxRx3fZtwlfR_CyW6xajglEJMahGQAo';
@@ -378,31 +383,31 @@
   const err = (...a) => console.error(LOG, ...a);
 
   const ROUTES = [
-    { value: 'WH_ST',    label: 'WH→ST',       title: 'Warehouse → Site' },
-    { value: 'SU_ST',    label: 'SUP→ST',       title: 'Supplier → Site' },
-    { value: 'SU_WH',    label: 'SUP→WH',       title: 'Supplier → Warehouse' },
-    { value: 'VAN_ST',   label: 'VAN→ST',       title: 'Van Stock → Site' },
+    { value: 'WH_ST', label: 'WH→ST', title: 'Warehouse → Site' },
+    { value: 'SU_ST', label: 'SUP→ST', title: 'Supplier → Site' },
+    { value: 'SU_WH', label: 'SUP→WH', title: 'Supplier → Warehouse' },
+    { value: 'VAN_ST', label: 'VAN→ST', title: 'Van Stock → Site' },
   ];
   // Statuses + their progress "tier" (purely visual — the 100% metric is receipt_confirmed only).
-  //   tier 0 = neutral (grey), 1 = early (amber), 2 = in-transit (blue),
-  //   3 = delivered (light green), 4 = done (dark green), 9 = bad (red)
+  // tier 0 = neutral (grey), 1 = early (amber), 2 = in-transit (blue),
+  // 3 = delivered (light green), 4 = done (dark green), 9 = bad (red)
   const STATUSES = [
-    { value: 'not_actioned',       label: 'Not actioned',         tier: 0 },
-    { value: 'ordered',            label: 'Ordered',              tier: 1 },
-    { value: 'confirmed',          label: 'Confirmed',            tier: 1 },
-    { value: 'shipped',            label: 'Shipped',              tier: 2 },
+    { value: 'not_actioned', label: 'Not actioned', tier: 0 },
+    { value: 'ordered', label: 'Ordered', tier: 1 },
+    { value: 'confirmed', label: 'Confirmed', tier: 1 },
+    { value: 'shipped', label: 'Shipped', tier: 2 },
     { value: 'collected_engineer', label: 'Collected by engineer',tier: 2 },
     { value: 'collected_customer', label: 'Collected by customer',tier: 2 },
-    { value: 'delivered_wh',       label: 'Delivered to WH',     tier: 3 },
-    { value: 'delivered',          label: 'Delivered to site',    tier: 3 },
-    { value: 'receipt_confirmed',  label: 'Receipt confirmed',    tier: 4 },
-    { value: 'issue',              label: 'Issue',                tier: 9 },
-    { value: 'returned',           label: 'Returned',             tier: 9 },
+    { value: 'delivered_wh', label: 'Delivered to WH', tier: 3 },
+    { value: 'delivered', label: 'Delivered to site', tier: 3 },
+    { value: 'receipt_confirmed', label: 'Receipt confirmed', tier: 4 },
+    { value: 'issue', label: 'Issue', tier: 9 },
+    { value: 'returned', label: 'Returned', tier: 9 },
   ];
   const STATUS_BY_VALUE = Object.fromEntries(STATUSES.map(s => [s.value, s]));
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  2. STYLES — tuned to match SimPro (Roboto, rgb(35,42,47), white BG, blue #3071a9).
+  // 2. STYLES — tuned to match SimPro (Roboto, rgb(35,42,47), white BG, blue #3071a9).
   // ═══════════════════════════════════════════════════════════════════════════
   GM_addStyle(`
     /* ── Allocated-tab guard — hide MT columns on all other stock sub-tabs ── */
@@ -419,7 +424,7 @@
       border-right: 1px solid #e1e6eb;
       padding: 2px 4px;
       vertical-align: middle;
-      background: transparent;           /* inherit from row so we blend */
+      background: transparent; /* inherit from row so we blend */
     }
     /* Header cells deliberately inherit font/colour from SimPro's native <th>
        so "Route / Tracking No. / Status / Info" look identical to the built-in
@@ -428,7 +433,7 @@
     #materialsTable th.mt-col-head {
       border-left: 1px solid #e1e6eb;
       border-right: 1px solid #e1e6eb;
-      background: #fff !important;   /* match SimPro's native white headers */
+      background: #fff !important; /* match SimPro's native white headers */
       white-space: nowrap;
       padding: 4px 6px;
       vertical-align: middle;
@@ -442,20 +447,20 @@
        occasional inline overrides. syncAllocatedView removes those inline
        overrides when leaving Allocated so SimPro's colours take over. */
     #materialsTable.mt-allocated-active .mt-row-even > td { background: #ffffff !important; }
-    #materialsTable.mt-allocated-active .mt-row-odd  > td { background: #eef2f7 !important; }
+    #materialsTable.mt-allocated-active .mt-row-odd > td { background: #eef2f7 !important; }
     /* Fixed widths so dropdowns never overlap.
        v1.6.4: reduced from 608px → 479px; v1.6.4b: 479px → 412px.
        The header labels also drive minimum column width (white-space:nowrap),
        so "Track No." and "ℹ" were shortened to let those columns go narrow. */
-    #materialsTable th.mt-col-route,  #materialsTable td.mt-route-cell  { width:  115px; }
-    #materialsTable th.mt-col-track,  #materialsTable td.mt-track-cell  { width:   85px; }
-    #materialsTable th.mt-col-eta,    #materialsTable td.mt-eta-cell    { width:  100px; }
-    #materialsTable th.mt-col-status, #materialsTable td.mt-status-cell { width:  110px; }
-    #materialsTable th.mt-col-info,   #materialsTable td.mt-info-cell   { width:   22px; text-align: center; }
+    #materialsTable th.mt-col-route, #materialsTable td.mt-route-cell { width: 115px; }
+    #materialsTable th.mt-col-track, #materialsTable td.mt-track-cell { width: 85px; }
+    #materialsTable th.mt-col-eta, #materialsTable td.mt-eta-cell { width: 100px; }
+    #materialsTable th.mt-col-status, #materialsTable td.mt-status-cell { width: 110px; }
+    #materialsTable th.mt-col-info, #materialsTable td.mt-info-cell { width: 22px; text-align: center; }
     /* Prevent select elements from overflowing their column — width:100% fills
        the TD but max-width:100% stops the select's intrinsic min-width from
        pushing the column wider in table-layout:auto. */
-    #materialsTable td.mt-route-cell  select,
+    #materialsTable td.mt-route-cell select,
     #materialsTable td.mt-status-cell select { max-width: 100%; }
     /* Tracking cell holds an input + a copy button side-by-side */
     #materialsTable td.mt-track-cell .mt-track-wrap {
@@ -519,7 +524,7 @@
       font-style: italic;
     }
     #materialsTable input.mt-track[readonly]:hover {
-      border-color: #c5ced8;   /* don't pulse on hover */
+      border-color: #c5ced8; /* don't pulse on hover */
     }
     /* Per-row save feedback.
        We DON'T paint the whole row any more — that fought the status tier
@@ -528,18 +533,18 @@
        thin stripe on the left edge of the checkbox cell — never overlaps the
        status cell, so the tier colour always shows through. */
     #materialsTable tr.mt-dirty > td.mt-check {
-      box-shadow: inset 4px 0 0 #f0ad4e;   /* amber while saving */
+      box-shadow: inset 4px 0 0 #f0ad4e; /* amber while saving */
     }
     #materialsTable tr.mt-saved > td.mt-check {
-      box-shadow: inset 4px 0 0 #5cb85c;   /* green flash on success */
+      box-shadow: inset 4px 0 0 #5cb85c; /* green flash on success */
       transition: box-shadow 0.8s;
     }
     #materialsTable tr.mt-error > td.mt-check {
-      box-shadow: inset 4px 0 0 #c9302c;   /* red on save failure */
+      box-shadow: inset 4px 0 0 #c9302c; /* red on save failure */
     }
     /* ── Zero-assigned rows: MT controls locked ──────────────────────────────
        When assigned_qty = 0 (nothing has been pulled from stock yet) the row
-       gets the mt-unassigned class.  Every MT cell is dimmed and made
+       gets the mt-unassigned class. Every MT cell is dimmed and made
        non-interactive — there's nothing to track until stock is assigned.
        The !important on background beats both odd/even striping and tier
        colour rules so the graying is unmistakably visible. */
@@ -557,12 +562,12 @@
     /* IMPORTANT: tier rules must outweigh the base #materialsTable rule, so
        we prefix them with the same ID to lift specificity above 0,1,1,1. */
     #materialsTable select.mt-status { border-left: 4px solid transparent; }
-    #materialsTable select.mt-status.mt-tier-0 { background: #ffffff;  border-left-color: #9aa5b1; color: #4a5560; }
-    #materialsTable select.mt-status.mt-tier-1 { background: #fff4e0;  border-left-color: #f0ad4e; color: #8a5a00; font-weight: 600; }
-    #materialsTable select.mt-status.mt-tier-2 { background: #e7f3fa;  border-left-color: #31b0d5; color: #1d5f7a; font-weight: 600; }
-    #materialsTable select.mt-status.mt-tier-3 { background: #e7f6e7;  border-left-color: #5cb85c; color: #1e6a1e; font-weight: 600; }
-    #materialsTable select.mt-status.mt-tier-4 { background: #c9edca;  border-left-color: #2b8a3e; color: #134d13; font-weight: 700; }
-    #materialsTable select.mt-status.mt-tier-9 { background: #fdecea;  border-left-color: #c9302c; color: #9c2420; font-weight: 700; }
+    #materialsTable select.mt-status.mt-tier-0 { background: #ffffff; border-left-color: #9aa5b1; color: #4a5560; }
+    #materialsTable select.mt-status.mt-tier-1 { background: #fff4e0; border-left-color: #f0ad4e; color: #8a5a00; font-weight: 600; }
+    #materialsTable select.mt-status.mt-tier-2 { background: #e7f3fa; border-left-color: #31b0d5; color: #1d5f7a; font-weight: 600; }
+    #materialsTable select.mt-status.mt-tier-3 { background: #e7f6e7; border-left-color: #5cb85c; color: #1e6a1e; font-weight: 600; }
+    #materialsTable select.mt-status.mt-tier-4 { background: #c9edca; border-left-color: #2b8a3e; color: #134d13; font-weight: 700; }
+    #materialsTable select.mt-status.mt-tier-9 { background: #fdecea; border-left-color: #c9302c; color: #9c2420; font-weight: 700; }
     /* Colour bleeds into the TD too so the cell is obvious at a glance */
     #materialsTable td.mt-status-cell.mt-cell-tier-1 { background: #fff4e0 !important; }
     #materialsTable td.mt-status-cell.mt-cell-tier-2 { background: #e7f3fa !important; }
@@ -596,7 +601,7 @@
     .mt-bulk-bar .mt-bar-row-top {
       flex-wrap: nowrap;
       min-width: 0;
-      overflow-x: auto;        /* very narrow viewports scroll horizontally
+      overflow-x: auto; /* very narrow viewports scroll horizontally
                                   rather than pushing the Apply button off-row */
     }
     .mt-bulk-bar .mt-bar-row-bottom {
@@ -612,8 +617,8 @@
       padding: 1px 6px; border-radius: 8px; font-weight: 700; text-transform: uppercase;
       font-size: 10px; letter-spacing: 0.5px; margin-right: 4px;
     }
-    .mt-bulk-bar .mt-role.mt-role-admin    { background: #24476b; color: #fff; }
-    .mt-bulk-bar .mt-role.mt-role-editor   { background: #3071a9; color: #fff; }
+    .mt-bulk-bar .mt-role.mt-role-admin { background: #24476b; color: #fff; }
+    .mt-bulk-bar .mt-role.mt-role-editor { background: #3071a9; color: #fff; }
     .mt-bulk-bar .mt-role.mt-role-readonly { background: #9aa5b1; color: #fff; }
     .mt-bulk-bar .mt-admin-btn {
       padding: 2px 8px; background: #24476b; color: #fff;
@@ -674,10 +679,10 @@
     /* Fixed widths (not min-width) so the top-row layout is stable regardless
        of which option is selected — otherwise "Collected by customer" widens
        the select, pushing Apply to Selected onto a new line. */
-    .mt-bulk-bar select.mt-bulk-route  { width: 180px; flex: 0 0 180px; }
+    .mt-bulk-bar select.mt-bulk-route { width: 180px; flex: 0 0 180px; }
     .mt-bulk-bar select.mt-bulk-status { width: 200px; flex: 0 0 200px; }
-    .mt-bulk-bar input.mt-bulk-track   { width: 130px; flex: 0 0 130px; }
-    .mt-bulk-bar input.mt-bulk-eta     { width: 140px; flex: 0 0 140px; }
+    .mt-bulk-bar input.mt-bulk-track { width: 130px; flex: 0 0 130px; }
+    .mt-bulk-bar input.mt-bulk-eta { width: 140px; flex: 0 0 140px; }
     /* When "Clear ETA" is ticked, dim the date input to make the precedence
        obvious — the checkbox wins and the date is ignored. */
     .mt-bulk-bar.mt-bulk-eta-clearing input.mt-bulk-eta { opacity: 0.4; pointer-events: none; }
@@ -772,8 +777,8 @@
     .mt-audit-list { max-height: 55vh; overflow-y: auto; }
     .mt-audit-row:last-child { border-bottom: none; }
     .mt-audit-row .mt-audit-meta { display: flex; flex-direction: column; }
-    .mt-audit-row .mt-audit-when  { color: #697783; font-size: 11px; }
-    .mt-audit-row .mt-audit-who   { color: #24476b; font-weight: 600; word-break: break-all; }
+    .mt-audit-row .mt-audit-when { color: #697783; font-size: 11px; }
+    .mt-audit-row .mt-audit-who { color: #24476b; font-weight: 600; word-break: break-all; }
     .mt-audit-row .mt-audit-field { overflow-wrap: anywhere; }
     .mt-audit-row .mt-audit-field b { color: #333; }
     .mt-audit-row .mt-audit-arrow { color: #9aa5b1; padding: 0 4px; }
@@ -806,7 +811,7 @@
   `);
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  3. UTILITIES
+  // 3. UTILITIES
   // ═══════════════════════════════════════════════════════════════════════════
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -905,7 +910,7 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  4. CONTEXT EXTRACTION
+  // 4. CONTEXT EXTRACTION
   // ═══════════════════════════════════════════════════════════════════════════
   function extractCostCentreContext() {
     // Cost-centre edit page context
@@ -932,7 +937,7 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  5. ROW PARSING (cost-centre edit page)
+  // 5. ROW PARSING (cost-centre edit page)
   // ═══════════════════════════════════════════════════════════════════════════
   function parseAllocationRows(table) {
     const rows = [...table.querySelectorAll('tbody tr.assignFromStock')];
@@ -956,7 +961,7 @@
 
       const cells = [...row.querySelectorAll('td')];
       // Sub-rows (personal/secondary stock locations like "PN_Darren H. Stock")
-      // have cells[0] as an empty colspan=8 placeholder.  Main rows have the
+      // have cells[0] as an empty colspan=8 placeholder. Main rows have the
       // material name in cells[0] and the warehouse location in cells[8].
       const isSubRow = cells.length < 10;
       if (!isSubRow) {
@@ -969,7 +974,7 @@
       const required_qty = isSubRow ? lastRequiredQty
         : parseFloat(cells[1]?.innerText || '') || null;
       // stockInput.value is the qty being assigned from this specific location —
-      // the same input that SimPro uses for the allocation spinner.  Using
+      // the same input that SimPro uses for the allocation spinner. Using
       // innerText would always give '' for <input> elements (fixed in v1.6.6).
       const assigned_qty = parseFloat(stockInput.value || '') || null;
       // Sub-row: location label is in cells[1] ("Stored at PN_Darren H. Stock").
@@ -996,24 +1001,24 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  6. SUPABASE CLIENT + AUTH
+  // 6. SUPABASE CLIENT + AUTH
   // ═══════════════════════════════════════════════════════════════════════════
   let sb = null;
   let currentUser = null;
-  let currentUserRole = null;     // 'admin' | 'editor' | 'readonly' — populated after sign-in
-  let currentStockTab = 'All';   // active stock sub-tab; written by syncAllocatedView, read by applyFilter
+  let currentUserRole = null; // 'admin' | 'editor' | 'readonly' — populated after sign-in
+  let currentStockTab = 'All'; // active stock sub-tab; written by syncAllocatedView, read by applyFilter
 
   function initClient() {
     if (sb) return sb;
     const { createClient } = supabase;
     // Use Tampermonkey's GM_getValue/setValue as the auth storage instead of
-    // window.localStorage.  localStorage is per-origin: a session created on
+    // window.localStorage. localStorage is per-origin: a session created on
     // powernaturally.simprosuite.com is invisible to reportbuilder.simprosuite.com.
     // GM storage is shared across all domains that run this userscript, so signing
     // in once on a SimPro cost-centre page automatically covers the BI page too.
     const gmStorage = {
-      getItem:    k => GM_getValue(k, null),
-      setItem:    (k, v) => GM_setValue(k, v),
+      getItem: k => GM_getValue(k, null),
+      setItem: (k, v) => GM_setValue(k, v),
       removeItem: k => GM_deleteValue(k),
     };
     sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
@@ -1088,7 +1093,7 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  7. DATA SYNC
+  // 7. DATA SYNC
   // ═══════════════════════════════════════════════════════════════════════════
   async function ensureRecords(ctx, rows) {
     const { data: existing, error: fetchErr } = await sb
@@ -1138,15 +1143,15 @@
         // calculation uses the wrong denominator and diverges from the CC page.
         const stored = existingMap.get(key);
         // Guard: only propagate an assigned_qty decrease-to-null if the DOM
-        // value is genuinely non-null.  A null/zero value from parseAllocationRows
+        // value is genuinely non-null. A null/zero value from parseAllocationRows
         // may be a timing artefact — SimPro sometimes initialises stock inputs
         // asynchronously AFTER document-idle fires, so we can briefly see 0 even
-        // when stock IS assigned.  Writing that 0 back to Supabase would corrupt
-        // the BI progress denominator for every user.  We still allow legitimate
+        // when stock IS assigned. Writing that 0 back to Supabase would corrupt
+        // the BI progress denominator for every user. We still allow legitimate
         // updates (non-null → different non-null, or null → non-null).
         const aqChanged = stored.assigned_qty !== r.assigned_qty &&
                           (r.assigned_qty != null || stored.assigned_qty == null);
-        const rqChanged = stored.required_qty  !== r.required_qty;
+        const rqChanged = stored.required_qty !== r.required_qty;
         if (aqChanged || rqChanged) {
           toUpdate.push({ id: stored.id, assigned_qty: r.assigned_qty, required_qty: r.required_qty });
           // Patch local map immediately so callers see fresh values
@@ -1213,8 +1218,8 @@
                   <td>${escapeHtml(u.email || u.user_id)}${isSelf ? ' <small style="color:#697783;">(you)</small>' : ''}</td>
                   <td>
                     <select class="mt-role-sel" data-prev="${escapeHtml(u.role)}" ${selfAttr}>
-                      <option value="admin"    ${u.role==='admin'?'selected':''}>Admin</option>
-                      <option value="editor"   ${u.role==='editor'?'selected':''}>Editor</option>
+                      <option value="admin" ${u.role==='admin'?'selected':''}>Admin</option>
+                      <option value="editor" ${u.role==='editor'?'selected':''}>Editor</option>
                       <option value="readonly" ${u.role==='readonly'?'selected':''}>Readonly</option>
                     </select>
                   </td>
@@ -1235,7 +1240,7 @@
           if (error) {
             err('role update failed', error);
             toast('Role update failed: ' + error.message, { error: true });
-            sel.value = prev;  // revert
+            sel.value = prev; // revert
           } else {
             sel.dataset.prev = newRole;
             toast('Role updated');
@@ -1263,7 +1268,7 @@
       const msg = error.message || String(error);
       if (/invalid input value for enum/i.test(msg) || error.code === '22P02') {
         const which = /delivery_status/i.test(msg) ? 'status'
-                    : /delivery_route/i.test(msg)  ? 'route'
+                    : /delivery_route/i.test(msg) ? 'route'
                     : 'enum';
         throw new Error(`${which} value not in database — run migration 0003_add_route_and_status_values.sql in Supabase SQL editor`);
       }
@@ -1297,18 +1302,18 @@
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  8. UI INJECTION — cost-centre edit page
+  // 8. UI INJECTION — cost-centre edit page
   // ═══════════════════════════════════════════════════════════════════════════
   const MT_COLS = [
-    { key: 'route',       label: 'Route',        cls: 'mt-col-route'  },
-    { key: 'tracking_no', label: 'Track. No.',   cls: 'mt-col-track'  },
-    { key: 'eta',         label: 'ETA',          cls: 'mt-col-eta'    },
-    { key: 'status',      label: 'Status',       cls: 'mt-col-status' },
-    { key: 'info',        label: 'ⓘ',        cls: 'mt-col-info'   },
+    { key: 'route', label: 'Route', cls: 'mt-col-route' },
+    { key: 'tracking_no', label: 'Track. No.', cls: 'mt-col-track' },
+    { key: 'eta', label: 'ETA', cls: 'mt-col-eta' },
+    { key: 'status', label: 'Status', cls: 'mt-col-status' },
+    { key: 'info', label: 'ⓘ', cls: 'mt-col-info' },
   ];
 
   // Headers: 0 Name, 1 Required, 2 _, 3 Assigned, 4 _, 5 Needed, 6 _, 7 Value,
-  //          8 Stored at, 9 In Stock, 10 _, 11 Move Difference To, 12 Assigned, 13 _
+  // 8 Stored at, 9 In Stock, 10 _, 11 Move Difference To, 12 Assigned, 13 _
   const INSERT_AFTER_IDX = 11;
 
   function injectHeaders(table) {
@@ -1373,7 +1378,7 @@
     const readonly = currentUserRole === 'readonly';
     // A row is "unassigned" (MT cells locked) only when BOTH the assignment
     // spinner AND the In Stock quantity are zero/null — i.e. there is genuinely
-    // nothing physical to track yet.  If stock is available at the location
+    // nothing physical to track yet. If stock is available at the location
     // (in_stock_qty > 0) the row is trackable even before SimPro's formal
     // assignment step, so warehouse staff can pre-fill route/tracking/ETA
     // before the job formally draws from stock.
@@ -1455,9 +1460,9 @@
     infoBtn.title = unassigned ? 'No quantity assigned — assign stock in SimPro to enable tracking' : 'Change history';
     if (unassigned) infoBtn.disabled = true;
     infoBtn.addEventListener('click', (e) => {
-      e.stopPropagation();   // Don't let SimPro intercept clicks inside its table.
-      e.preventDefault();    // Prevent any form-submit / default action SimPro may bind.
-      openAuditModal(record.id, parsedRow, record, ctx);  // ctx === recordsRef here
+      e.stopPropagation(); // Don't let SimPro intercept clicks inside its table.
+      e.preventDefault(); // Prevent any form-submit / default action SimPro may bind.
+      openAuditModal(record.id, parsedRow, record, ctx); // ctx === recordsRef here
     });
     infoTd.appendChild(infoBtn);
     if (target) row.insertBefore(infoTd, target); else row.appendChild(infoTd);
@@ -1596,19 +1601,19 @@
             const { data: inserted, error: insErr } = await sb
               .from('tracking_records')
               .insert({
-                job_id:           pageCtx.jobID,
-                cost_centre_id:   pageCtx.costCentreID,
-                section_id:       pageCtx.sectionID,
-                material_id:      parsedRow.material_id,
-                location_id:      parsedRow.location_id,
+                job_id: pageCtx.jobID,
+                cost_centre_id: pageCtx.costCentreID,
+                section_id: pageCtx.sectionID,
+                material_id: parsedRow.material_id,
+                location_id: parsedRow.location_id,
                 occurrence_index: parsedRow.occurrence_index,
-                material_name:    parsedRow.material_name,
-                location_name:    parsedRow.location_name,
-                required_qty:     parsedRow.required_qty,
-                assigned_qty:     parsedRow.assigned_qty,
-                status:           'not_actioned',
-                created_by:       currentUser.id,
-                updated_by:       currentUser.id,
+                material_name: parsedRow.material_name,
+                location_name: parsedRow.location_name,
+                required_qty: parsedRow.required_qty,
+                assigned_qty: parsedRow.assigned_qty,
+                status: 'not_actioned',
+                created_by: currentUser.id,
+                updated_by: currentUser.id,
               })
               .select()
               .single();
@@ -1685,18 +1690,18 @@
   }
   function labelFor(field, value) {
     if (field === 'status') return STATUS_BY_VALUE[value]?.label || value;
-    if (field === 'route')  return ROUTES.find(r => r.value === value)?.label || value;
-    if (field === 'eta')    return value || '—';
+    if (field === 'route') return ROUTES.find(r => r.value === value)?.label || value;
+    if (field === 'eta') return value || '—';
     return value;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  Cost-centre-wide audit log modal.
-  //  Shows every change across all tracking records for the current CC,
-  //  sorted newest-first.  Note: entries for records that were fully deleted
-  //  from tracking_records (ON DELETE CASCADE) won't appear — that's a
-  //  known limitation addressed if we later add cost_centre_id to the audit
-  //  table directly.
+  // Cost-centre-wide audit log modal.
+  // Shows every change across all tracking records for the current CC,
+  // sorted newest-first. Note: entries for records that were fully deleted
+  // from tracking_records (ON DELETE CASCADE) won't appear — that's a
+  // known limitation addressed if we later add cost_centre_id to the audit
+  // table directly.
   // ─────────────────────────────────────────────────────────────────────────
   async function openCCLogModal(ctx) {
     const { modal } = modalHtml({
@@ -1886,14 +1891,14 @@
         <span class="mt-refresh-hint" title="Saves stream in live. Changes persist instantly; no manual save needed.">⚠ Don't refresh — changes save automatically</span>
         <span class="mt-spacer"></span>
         <span class="mt-bulk-group mt-progress-host" title="Weighted progress. Each line contributes:
-  Not actioned      0%
-  Ordered    10%
-  Confirmed    50%
-  Shipped / Collected (eng|cust)   60%
-  Delivered to WH   70%
-  Delivered to site    80%
-  Receipt confirmed  100%
-  Issue / Returned     0%
+  Not actioned 0%
+  Ordered 10%
+  Confirmed 50%
+  Shipped / Collected (eng|cust) 60%
+  Delivered to WH 70%
+  Delivered to site 80%
+  Receipt confirmed 100%
+  Issue / Returned 0%
 Bar % = average weight across all lines.">
           <progress class="mt-progress-native" value="0" max="100"></progress>
           <span class="mt-progress-text">0%</span>
@@ -1950,11 +1955,11 @@ Bar % = average weight across all lines.">
       const etaClear = bar.querySelector('.mt-bulk-eta-clear').checked;
       let etaTouched = false;
       const changes = {};
-      if (route)        changes.route = route;
-      if (status)       changes.status = status;
-      if (tracking)     changes.tracking_no = tracking;
-      if (etaClear)              { changes.eta = null;        etaTouched = true; }
-      else if (etaInputVal)      { changes.eta = etaInputVal; etaTouched = true; }
+      if (route) changes.route = route;
+      if (status) changes.status = status;
+      if (tracking) changes.tracking_no = tracking;
+      if (etaClear) { changes.eta = null; etaTouched = true; }
+      else if (etaInputVal) { changes.eta = etaInputVal; etaTouched = true; }
       if (!route && !status && !tracking && !etaTouched) {
         toast('Pick at least one field to apply'); return;
       }
@@ -1974,7 +1979,7 @@ Bar % = average weight across all lines.">
           // Let the shared refresh path update cache + DOM so all renders stay in sync.
           const cached = recordsRef.byId?.get(recId);
           if (cached) Object.assign(cached, saved);
-          else        recordsRef.byId.set(recId, saved);
+          else recordsRef.byId.set(recId, saved);
           recordsRef.recordMap.set(
             `${saved.material_id}|${saved.location_id}|${saved.occurrence_index}`,
             cached || saved
@@ -2031,11 +2036,11 @@ Bar % = average weight across all lines.">
     // into one slice of work.
     // ─────────────────────────────────────────────────────────────────────
     const FILTER_STATUSES = {
-      all:     null,                                                    // show all rows
+      all: null, // show all rows
       pending: new Set(['not_actioned', 'ordered', 'confirmed']),
       transit: new Set(['shipped', 'collected_engineer', 'collected_customer', 'delivered_wh']),
-      done:    new Set(['delivered', 'receipt_confirmed']),
-      issues:  new Set(['issue', 'returned']),
+      done: new Set(['delivered', 'receipt_confirmed']),
+      issues: new Set(['issue', 'returned']),
     };
     let activeFilter = 'all';
     const chipEls = [...bar.querySelectorAll('.mt-chip')];
@@ -2072,8 +2077,8 @@ Bar % = average weight across all lines.">
           if (currentStockTab === 'Allocated' && tr.classList.contains('AllocatedStock')) {
             // On the Allocated tab, only force-show rows that SimPro has formally
             // allocated (AllocatedStock CSS class = stock drawn from inventory for
-            // this job).  This keeps the Allocated tab faithful to SimPro — it shows
-            // exactly what SimPro considers assigned, no more.  Non-allocated rows
+            // this job). This keeps the Allocated tab faithful to SimPro — it shows
+            // exactly what SimPro considers assigned, no more. Non-allocated rows
             // (RequiredStock-only) are hidden by SimPro's .hide class; we must not
             // override that or the tab becomes a dump of all materials.
             tr.style.setProperty('display', 'table-row', 'important');
@@ -2119,7 +2124,7 @@ Bar % = average weight across all lines.">
     }
     chipEls.forEach(chip => {
       chip.addEventListener('click', (e) => {
-        e.preventDefault();  // bar lives outside SimPro's <form>, but be safe
+        e.preventDefault(); // bar lives outside SimPro's <form>, but be safe
         e.stopPropagation();
         activeFilter = chip.dataset.filter;
         chipEls.forEach(c => c.classList.toggle('mt-chip-active', c === chip));
@@ -2185,7 +2190,7 @@ Bar % = average weight across all lines.">
         if (profiles) profiles.forEach(p => {
           if (p.email) {
             emailMap[p.user_id] = p.email;
-            userEmailCache.set(p.user_id, p.email);   // warm global cache
+            userEmailCache.set(p.user_id, p.email); // warm global cache
           }
         });
       } catch (e) { warn('CSV email lookup failed', e); }
@@ -2193,12 +2198,12 @@ Bar % = average weight across all lines.">
       // ── DOM name lookup (authoritative — beats stale DB values) ──────────
       // The DB may hold wrong data from the pre-v1.6.4 seeding bug (e.g.
       // location_name = "Receipt Confirmed" because cells[8] was read on an
-      // already-injected row where cell indices had shifted).  Read from the
+      // already-injected row where cell indices had shifted). Read from the
       // live DOM instead; it always reflects the current page state.
       //
       // After injectRowCells runs, every row has a leading checkbox <td> at
       // index 0 (shifting all original SimPro cells by +1), and 5 MT cells
-      // inserted mid-row.  We detect this via row.dataset.mtInjected and
+      // inserted mid-row. We detect this via row.dataset.mtInjected and
       // apply an offset (off = 1) so we still read the right original cells.
       // Sub-row detection: the original cells[0] is an empty colspan=8 <td>;
       // after injection it lives at cells[off] — check its colSpan attribute.
@@ -2212,9 +2217,9 @@ Bar % = average weight across all lines.">
           if (!mm) continue;
           const cells = [...row.querySelectorAll('td')];
           const injected = !!row.dataset.mtInjected;
-          const off = injected ? 1 : 0;   // checkbox at [0] shifts original cells by 1
+          const off = injected ? 1 : 0; // checkbox at [0] shifts original cells by 1
           const isSubRow = injected
-            ? (cells[off]?.colSpan || 1) > 1   // original cells[0] is colspan=8 for sub-rows
+            ? (cells[off]?.colSpan || 1) > 1 // original cells[0] is colspan=8 for sub-rows
             : cells.length < 10;
           const rawMat = (cells[off]?.innerText || '').trim();
           if (!isSubRow && rawMat) lastDomMat = rawMat.slice(0, 300);
@@ -2244,7 +2249,7 @@ Bar % = average weight across all lines.">
       for (const r of recs) {
         const dom = domNames.get(`${r.material_id}|${r.location_id}`) || {};
         // Prefer DOM values: they are read from the live page and are always
-        // correct.  The DB values can be stale or wrong (e.g. location_name
+        // correct. The DB values can be stale or wrong (e.g. location_name
         // seeded as "Receipt Confirmed" due to the pre-v1.6.4 parsing bug).
         lines.push([
           dom.material_name || r.material_name || '',
@@ -2276,30 +2281,30 @@ Bar % = average weight across all lines.">
   }
 
   // Per-status progress weight (per Pawel's spec):
-  //   Not actioned                 →   0%
-  //   Ordered                      →  10%
-  //   Confirmed   (order confirmed)→  50%
-  //   Shipped / Collected (eng|cust)→ 60%   (in-transit — between confirmed and delivered)
-  //   Delivered to WH              →  70%   (arrived at warehouse, pending onward delivery to site)
-  //   Delivered to site            →  80%
-  //   Receipt confirmed            → 100%
-  //   Issue / Returned             →   0%
+  // Not actioned → 0%
+  // Ordered → 10%
+  // Confirmed (order confirmed)→ 50%
+  // Shipped / Collected (eng|cust)→ 60% (in-transit — between confirmed and delivered)
+  // Delivered to WH → 70% (arrived at warehouse, pending onward delivery to site)
+  // Delivered to site → 80%
+  // Receipt confirmed → 100%
+  // Issue / Returned → 0%
   // Total % = sum(weights) / lines.
   const STATUS_WEIGHT = {
-    not_actioned:       0,
-    ordered:            0.10,
-    confirmed:          0.50,
-    shipped:            0.60,
+    not_actioned: 0,
+    ordered: 0.10,
+    confirmed: 0.50,
+    shipped: 0.60,
     collected_engineer: 0.60,
     collected_customer: 0.60,
-    delivered_wh:       0.70,
-    delivered:          0.80,
-    receipt_confirmed:  1.00,
-    issue:              0,
-    returned:           0,
+    delivered_wh: 0.70,
+    delivered: 0.80,
+    receipt_confirmed: 1.00,
+    issue: 0,
+    returned: 0,
   };
   function computeProgressPct(records) {
-    // Only count rows that have stock assigned (qty > 0).  Rows with no
+    // Only count rows that have stock assigned (qty > 0). Rows with no
     // assigned quantity carry the mt-unassigned class and represent materials
     // not yet pulled from stock — including them would dilute the percentage
     // with lines that have no meaningful tracking state.
@@ -2321,11 +2326,11 @@ Bar % = average weight across all lines.">
     const prog = bar.querySelector('progress.mt-progress-native');
     const txt = bar.querySelector('.mt-progress-text');
     if (prog) prog.value = pct;
-    if (txt)  txt.textContent = pct + '%';
+    if (txt) txt.textContent = pct + '%';
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  9. REALTIME
+  // 9. REALTIME
   // ═══════════════════════════════════════════════════════════════════════════
   function subscribeRealtime(ctx, onChange) {
     const channel = sb.channel(`cc-${ctx.jobID}-${ctx.costCentreID}`)
@@ -2381,7 +2386,7 @@ Bar % = average weight across all lines.">
     const recordsRef = {
       byId: new Map([...recordMap.values()].map(r => [r.id, r])),
       recordMap,
-      pageCtx: ctx,          // page context (jobID / costCentreID / sectionID)
+      pageCtx: ctx, // page context (jobID / costCentreID / sectionID)
       onRecordSaved: (saved) => {
         const cached = recordsRef.byId.get(saved.id);
         if (cached) Object.assign(cached, saved); else recordsRef.byId.set(saved.id, saved);
@@ -2425,7 +2430,7 @@ Bar % = average weight across all lines.">
       // The previous code skipped the update when document.activeElement
       // happened to equal the select, which occasionally masked bulk-apply
       // updates behind stale option text.
-      if (routeSel)  setSelectValue(routeSel,  rec.route || '');
+      if (routeSel) setSelectValue(routeSel, rec.route || '');
       if (statusSel) { setSelectValue(statusSel, rec.status); applyStatusTier(statusSel, rec.status); }
       if (trackInp && document.activeElement !== trackInp) {
         trackInp.value = rec.tracking_no || '';
@@ -2478,7 +2483,7 @@ Bar % = average weight across all lines.">
     // fires around document-idle, creating a race with our parseAllocationRows).
     // If we parsed before SimPro set the values, every row read assigned_qty=null
     // and was marked mt-unassigned — MT cells grayed-out for one user while fine
-    // for another on the same page.  Re-read each input after a short delay; if
+    // for another on the same page. Re-read each input after a short delay; if
     // the value has since changed, lift or apply mt-unassigned accordingly.
     // Two passes (300 ms + 1500 ms) cover fast inline-JS and slower AJAX init.
     function recheckAssignedState() {
@@ -2521,8 +2526,8 @@ Bar % = average weight across all lines.">
     // ── Stock sub-tab awareness ───────────────────────────────────────────────
     // MT columns + bulk bar are shown on the "Allocated" and "All" sub-tabs.
     // • Allocated: shows only SimPro-assigned rows (AllocatedStock class).
-    // • All:       shows all rows including unallocated stock — the working tab
-    //              for fresh jobs where nothing has been formally drawn yet.
+    // • All: shows all rows including unallocated stock — the working tab
+    // for fresh jobs where nothing has been formally drawn yet.
     // Required / In Stock / Order views remain uncluttered (MT columns hidden).
     const STOCK_SUB_TABS = new Set(['All', 'Required', 'Allocated', 'In Stock', 'Order']);
     function syncAllocatedView() {
@@ -2535,7 +2540,7 @@ Bar % = average weight across all lines.">
       if (bar) bar.style.display = isMtActive ? '' : 'none';
       // Always clear inline background-color from native TDs first, then
       // re-stripe only the rows that are visible after SimPro's tab filtering
-      // and applyFilter (called at the end) have settled.  setTimeout(0) ensures
+      // and applyFilter (called at the end) have settled. setTimeout(0) ensures
       // the DOM display changes from applyFilter are committed before we read
       // getComputedStyle — this is correct for every tab including Allocated
       // (which now only shows a subset of rows: those with AllocatedStock class).
@@ -2643,9 +2648,9 @@ Bar % = average weight across all lines.">
     const tbody = table.querySelector('tbody');
     // Wrap the debounced callback so we can filter mutations before debouncing.
     // We react to:
-    //   (a) childList changes on tbody/parent — SimPro replaced rows (full re-render)
-    //   (b) class attribute changes on <tr> elements — SimPro added/removed `hide`
-    //       without replacing DOM (partial autosave re-render)
+    // (a) childList changes on tbody/parent — SimPro replaced rows (full re-render)
+    // (b) class attribute changes on <tr> elements — SimPro added/removed `hide`
+    // without replacing DOM (partial autosave re-render)
     // We deliberately ignore attribute changes on child elements (td, select, input)
     // so our own per-row control state changes don't cause feedback loops.
     const tableResilienceObserver = new MutationObserver(mutations => {
@@ -2718,15 +2723,15 @@ Bar % = average weight across all lines.">
     // Build { normalisedName -> { total, weighted, issues, name } } using tier weights
     const aggByName = new Map();
     // Display names on the list page look like:
-    //   "ASHP Installation R3 - 1669 (#4691-41206)"
-    //   "BUS Grant Refund £X After Installation (01-1)"
+    // "ASHP Installation R3 - 1669 (#4691-41206)"
+    // "BUS Grant Refund £X After Installation (01-1)"
     // We strip the trailing "(...)" chunk AND a trailing " - <digits>" CC-number
     // suffix, because the breadcrumb on the edit page gives us just the base name.
     const normName = (s) => String(s || '')
       .toLowerCase()
-      .replace(/\s*\(\s*#?\s*[\d/\-\s]+\)\s*$/, '')   // strip "(#4691-41206)" / "(01-1)" / "(5)"
-      .replace(/\s*-\s*\d+\s*$/, '')                   // strip trailing " - 1669"
-      .replace(/[–—]/g, '-')                           // normalise en/em dashes to -
+      .replace(/\s*\(\s*#?\s*[\d/\-\s]+\)\s*$/, '') // strip "(#4691-41206)" / "(01-1)" / "(5)"
+      .replace(/\s*-\s*\d+\s*$/, '') // strip trailing " - 1669"
+      .replace(/[–—]/g, '-') // normalise en/em dashes to -
       .replace(/\s+/g, ' ')
       .trim();
     for (const rec of named) {
@@ -2746,11 +2751,11 @@ Bar % = average weight across all lines.">
     //
     // The project page renders each cost-centre as a block with two visual
     // tiers:
-    //   ┌──────────────────────────────────────────────────────────────┐
-    //   │  [🔒] ASHP Installation R3 - 1669 (#4691-41206)              │ ← title line
-    //   │                                                              │
-    //   │  Invoiced: 50.00% ▓▓▓░░   Stage: In Progress   Total: £…     │ ← Invoiced row
-    //   └──────────────────────────────────────────────────────────────┘
+    // ┌──────────────────────────────────────────────────────────────┐
+    // │ [🔒] ASHP Installation R3 - 1669 (#4691-41206) │ ← title line
+    // │ │
+    // │ Invoiced: 50.00% ▓▓▓░░ Stage: In Progress Total: £… │ ← Invoiced row
+    // └──────────────────────────────────────────────────────────────┘
     //
     // SimPro has shipped several markups for this — `th.openCostCentre`,
     // `.fieldHeader`, plain nested divs — so rather than pinning to any
@@ -2768,8 +2773,8 @@ Bar % = average weight across all lines.">
       const all = [...document.querySelectorAll('div, li, section, article, tr, td, th')];
       const candidates = [];
       for (const el of all) {
-        if (el.children.length === 0) continue;           // skip leaves
-        if (el.children.length > 60)    continue;          // skip page-scale containers
+        if (el.children.length === 0) continue; // skip leaves
+        if (el.children.length > 60) continue; // skip page-scale containers
         const txt = el.innerText || '';
         if (!/\bInvoiced:/i.test(txt)) continue;
         if (!/\bStage:/i.test(txt) && !/\bTotal:/i.test(txt)) continue;
@@ -2882,13 +2887,13 @@ Bar % = average weight across all lines.">
   // ═══════════════════════════════════════════════════════════════════════════
   // 12. BI PAGE — Metabase question overlay (reportbuilder.simprosuite.com)
   //
-  //  Metabase uses a ReactVirtualized TableInteractive grid — no <table> tags,
-  //  no ARIA roles.  Header cells (.TableInteractive-headerCellData) are in the
-  //  DOM from page load, so detection is instant (~150 ms first poll).  Data
-  //  cells are absolutely-positioned divs that ReactVirtualized renders only for
-  //  the ~20 visible rows; the overlay uses position:fixed cells updated via
-  //  MutationObserver + scroll listener so the "Progress %" column tracks the
-  //  virtual scroll without touching the containers' overflow or width.
+  // Metabase uses a ReactVirtualized TableInteractive grid — no <table> tags,
+  // no ARIA roles. Header cells (.TableInteractive-headerCellData) are in the
+  // DOM from page load, so detection is instant (~150 ms first poll). Data
+  // cells are absolutely-positioned divs that ReactVirtualized renders only for
+  // the ~20 visible rows; the overlay uses position:fixed cells updated via
+  // MutationObserver + scroll listener so the "Progress %" column tracks the
+  // virtual scroll without touching the containers' overflow or width.
   // ═══════════════════════════════════════════════════════════════════════════
   async function bootstrapBIPage() {
     log('bootstrap: BI page');
@@ -2900,9 +2905,9 @@ Bar % = average weight across all lines.">
     // and causing getSession() to return null.
     //
     // Fix: read the raw session JSON directly from GM storage (synchronous,
-    // no network, no CSP risk).  If the access token is expiring, refresh it
+    // no network, no CSP risk). If the access token is expiring, refresh it
     // via GM_xmlhttpRequest which runs in Tampermonkey's extension context and
-    // is fully CSP-exempt.  All subsequent Supabase calls already use
+    // is fully CSP-exempt. All subsequent Supabase calls already use
     // GM_xmlhttpRequest for the same reason.
 
     // ── Auth: read session directly from GM storage (no Supabase client) ────
@@ -2950,13 +2955,13 @@ Bar % = average weight across all lines.">
 
     const biJwt = biSession.access_token;
     currentUser = biSession.user;
-    currentUserRole = 'readonly';   // role fetch is CSP-blocked; readonly is safe for BI page
+    currentUserRole = 'readonly'; // role fetch is CSP-blocked; readonly is safe for BI page
     log('BI: signed in as', currentUser?.email || currentUser?.id);
 
     // ── Strategy C: Metabase ReactVirtualized / TableInteractive ─────────────
     // Metabase uses class-based virtual-scroll divs — no <table>, no ARIA roles.
     // The header cells are rendered immediately from page load, so detection is
-    // essentially instant (first poll ≈150 ms).  Data cells are absolutely
+    // essentially instant (first poll ≈150 ms). Data cells are absolutely
     // positioned inside a ReactVirtualized__Grid that only renders ~20 visible
     // rows at a time; we use a MutationObserver + scroll listener to keep the
     // Progress % overlay in sync as the user scrolls.
@@ -3002,7 +3007,7 @@ Bar % = average weight across all lines.">
     );
     const progressLeft = (parseFloat(lastHdrCell.style.left) || 0)
                        + (parseFloat(lastHdrCell.style.width) || 120);
-    const PROG_W = 90;   // px width of the injected column
+    const PROG_W = 90; // px width of the injected column
     const cellH = parseFloat(headerCells[0]?.style.height) || 36;
 
     log('BI: CC col left=' + ccLeft + 'px | progress col left=' + progressLeft + 'px');
@@ -3020,7 +3025,7 @@ Bar % = average weight across all lines.">
     const totalRowCount = Math.round(parseFloat(dataContainer.style.height) / cellH) || 0;
 
     // ── Fetch ALL tracking_records (CSP-exempt via GM_xmlhttpRequest) ─────────
-    // fetch() is blocked by Metabase's connect-src CSP.  GM_xmlhttpRequest runs
+    // fetch() is blocked by Metabase's connect-src CSP. GM_xmlhttpRequest runs
     // in Tampermonkey's extension process and bypasses the page CSP entirely.
     // We fetch all records (no CC filter) because virtual scrolling means we
     // cannot enumerate CC IDs before the user has scrolled through all rows.
@@ -3032,11 +3037,11 @@ Bar % = average weight across all lines.">
           url: SUPABASE_URL + '/rest/v1/tracking_records'
               + '?select=cost_centre_id,status,assigned_qty',
           headers: {
-            'apikey':        SUPABASE_ANON_KEY,
+            'apikey': SUPABASE_ANON_KEY,
             'Authorization': 'Bearer ' + biJwt,
-            'Content-Type':  'application/json',
-            'Accept':        'application/json',
-            'Prefer':        'count=none',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Prefer': 'count=none',
           },
           onload: r => {
             if (r.status >= 200 && r.status < 300) {
@@ -3074,12 +3079,12 @@ Bar % = average weight across all lines.">
       if (!p || p.total === 0) return { text: '—', color: '#9aa5b1', pct: null };
       const pct = Math.round(100 * p.weighted / p.total);
       return {
-        text:  pct + '%',
+        text: pct + '%',
         pct,
         color: pct >= 80 ? '#1e6a1e'
              : pct >= 50 ? '#3071a9'
-             : pct >  0  ? '#8a5a00'
-             :              '#697783',
+             : pct > 0 ? '#8a5a00'
+             : '#697783',
       };
     }
 
@@ -3172,20 +3177,20 @@ Bar % = average weight across all lines.">
     document.body.appendChild(biFilterPanel);
 
     const FILTER_OPTIONS = [
-      { label: 'All',       fn: null },
-      { label: '≥ 80%',    fn: p => p !== null && p >= 80 },
+      { label: 'All', fn: null },
+      { label: '≥ 80%', fn: p => p !== null && p >= 80 },
       { label: '50 – 79%', fn: p => p !== null && p >= 50 && p < 80 },
-      { label: '1 – 49%',  fn: p => p !== null && p > 0  && p < 50 },
-      { label: '0%',        fn: p => p === 0 },
-      { label: 'No data',   fn: p => p === null },
-      { label: 'Has data',  fn: p => p !== null },
+      { label: '1 – 49%', fn: p => p !== null && p > 0 && p < 50 },
+      { label: '0%', fn: p => p === 0 },
+      { label: 'No data', fn: p => p === null },
+      { label: 'Has data', fn: p => p !== null },
     ];
     FILTER_OPTIONS.forEach(opt => {
       const item = document.createElement('div');
       item.textContent = opt.label;
       item.style.cssText = 'padding:6px 14px;cursor:pointer;color:#24476b';
       item.addEventListener('mouseover', () => { item.style.background = '#eef3f8'; });
-      item.addEventListener('mouseout',  () => { item.style.background = ''; });
+      item.addEventListener('mouseout', () => { item.style.background = ''; });
       item.addEventListener('click', () => {
         biActiveFilter = opt.fn;
         const count = countMatchingAllRows(opt.fn);
@@ -3211,9 +3216,9 @@ Bar % = average weight across all lines.">
       const cols = []; let cur = '', inQ = false;
       for (let i = 0; i < line.length; i++) {
         const ch = line[i];
-        if      (ch === '"') { inQ = !inQ; }
+        if (ch === '"') { inQ = !inQ; }
         else if (ch === ',' && !inQ) { cols.push(cur); cur = ''; }
-        else    { cur += ch; }
+        else { cur += ch; }
       }
       cols.push(cur);
       return cols;
@@ -3281,7 +3286,7 @@ Bar % = average weight across all lines.">
 
     // ── Data overlay update: rAF + element pool (no destroy/recreate) ─────────
     // requestAnimationFrame syncs updates with the browser's paint cycle so the
-    // overlay never lags behind the scroll position.  The element pool eliminates
+    // overlay never lags behind the scroll position. The element pool eliminates
     // the flicker that occurs when divs are removed and re-added mid-frame.
     let biRafPending = false;
     function updateBiOverlays() {
@@ -3383,7 +3388,7 @@ Bar % = average weight across all lines.">
     // ── Continuous header-position tracker via rAF ─────────────────────────────
     // Metabase's layout can shift when side-panels toggle (not just on resize),
     // so polling with rAF is the only reliable way to keep the header overlay
-    // pixel-perfect.  We compare top + left and only call positionHdrOverlay()
+    // pixel-perfect. We compare top + left and only call positionHdrOverlay()
     // when the values actually change — zero overhead when nothing moves.
     let _phTop = null, _phLeft = null;
     (function trackPosition() {
